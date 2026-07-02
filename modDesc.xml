@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<modDesc descVersion="92">
+    <author>TisonK</author>
+    <version>1.0.0.0</version>
+    <modName>FS25_NetworkSync</modName>
+
+    <title>
+        <en><![CDATA[Realistic Farming - Network Sync]]></en>
+        <de><![CDATA[Realistic Farming - Network Sync]]></de>
+        <fr><![CDATA[Realistic Farming - Network Sync]]></fr>
+        <nl><![CDATA[Realistic Farming - Network Sync]]></nl>
+        <it><![CDATA[Realistic Farming - Network Sync]]></it>
+        <pl><![CDATA[Realistic Farming - Network Sync]]></pl>
+        <es><![CDATA[Realistic Farming - Network Sync]]></es>
+        <ea><![CDATA[Realistic Farming - Network Sync]]></ea>
+        <pt><![CDATA[Realistic Farming - Network Sync]]></pt>
+        <br><![CDATA[Realistic Farming - Network Sync]]></br>
+        <ru><![CDATA[Realistic Farming - Network Sync]]></ru>
+        <uk><![CDATA[Realistic Farming - Network Sync]]></uk>
+        <cz><![CDATA[Realistic Farming - Network Sync]]></cz>
+        <hu><![CDATA[Realistic Farming - Network Sync]]></hu>
+        <ro><![CDATA[Realistic Farming - Network Sync]]></ro>
+        <tr><![CDATA[Realistic Farming - Network Sync]]></tr>
+        <fi><![CDATA[Realistic Farming - Network Sync]]></fi>
+        <no><![CDATA[Realistic Farming - Network Sync]]></no>
+        <sv><![CDATA[Realistic Farming - Network Sync]]></sv>
+        <da><![CDATA[Realistic Farming - Network Sync]]></da>
+        <kr><![CDATA[Realistic Farming - Network Sync]]></kr>
+        <jp><![CDATA[Realistic Farming - Network Sync]]></jp>
+        <ct><![CDATA[Realistic Farming - Network Sync]]></ct>
+        <fc><![CDATA[Realistic Farming - Network Sync]]></fc>
+        <id><![CDATA[Realistic Farming - Network Sync]]></id>
+        <vi><![CDATA[Realistic Farming - Network Sync]]></vi>
+    </title>
+
+    <description>
+        <en><![CDATA[Required library for the Realistic Farming mod ecosystem. Replaces each companion mod's own multiplayer events with one batched sync cycle, cutting network traffic and stopping the cross-mod rubber-banding in multiplayer. No settings and nothing to configure. Install it and let it run.]]></en>
+        <de><![CDATA[Erforderliche Bibliothek für das Realistic Farming Mod-Ökosystem. Ersetzt die eigenen Mehrspieler-Events jedes Begleitmods durch einen gebündelten Sync-Zyklus, senkt den Netzwerkverkehr und stoppt das mod-übergreifende Ruckeln im Mehrspieler. Keine Einstellungen.]]></de>
+        <fr><![CDATA[Bibliothèque requise pour l'écosystème de mods Realistic Farming. Remplace les évènements multijoueur propres à chaque mod compagnon par un seul cycle de synchronisation groupé, réduisant le trafic réseau et supprimant les à-coups en multijoueur. Aucun réglage.]]></fr>
+        <nl><![CDATA[Vereiste bibliotheek voor het Realistic Farming mod-ecosysteem. Vervangt de eigen multiplayer-events van elke bijbehorende mod door één gebundelde sync-cyclus, wat netwerkverkeer verlaagt en het schokken tussen mods in multiplayer stopt. Geen instellingen.]]></nl>
+        <it><![CDATA[Libreria richiesta per l'ecosistema di mod Realistic Farming. Sostituisce gli eventi multigiocatore di ogni mod compagno con un unico ciclo di sincronizzazione in blocco, riducendo il traffico di rete e fermando gli scatti tra mod in multigiocatore. Nessuna impostazione.]]></it>
+        <pl><![CDATA[Wymagana biblioteka dla ekosystemu modów Realistic Farming. Zastępuje własne zdarzenia wieloosobowe każdego moda towarzyszącego jednym zbiorczym cyklem synchronizacji, zmniejszając ruch sieciowy i eliminując przeskoki między modami w trybie wieloosobowym. Brak ustawień.]]></pl>
+        <es><![CDATA[Biblioteca requerida para el ecosistema de mods Realistic Farming. Sustituye los eventos multijugador propios de cada mod compañero por un único ciclo de sincronización agrupado, reduciendo el tráfico de red y eliminando los tirones entre mods en multijugador. Sin ajustes.]]></es>
+        <ea><![CDATA[Biblioteca requerida para el ecosistema de mods Realistic Farming. Sustituye los eventos multijugador propios de cada mod compañero por un único ciclo de sincronización agrupado, reduciendo el tráfico de red y eliminando los tirones entre mods en multijugador. Sin ajustes.]]></ea>
+        <pt><![CDATA[Biblioteca necessária para o ecossistema de mods Realistic Farming. Substitui os eventos multijogador de cada mod companheiro por um único ciclo de sincronização em lote, reduzindo o tráfego de rede e acabando com os travamentos entre mods no multijogador. Sem configurações.]]></pt>
+        <br><![CDATA[Biblioteca necessária para o ecossistema de mods Realistic Farming. Substitui os eventos multijogador de cada mod companheiro por um único ciclo de sincronização em lote, reduzindo o tráfego de rede e acabando com os travamentos entre mods no multijogador. Sem configurações.]]></br>
+        <ru><![CDATA[Необходимая библиотека для экосистемы модов Realistic Farming. Заменяет собственные сетевые события каждого сопутствующего мода одним пакетным циклом синхронизации, снижая сетевой трафик и устраняя рывки между модами в мультиплеере. Настроек нет.]]></ru>
+        <uk><![CDATA[Необхідна бібліотека для екосистеми модів Realistic Farming. Замінює власні мережеві події кожного супутнього мода одним пакетним циклом синхронізації, знижуючи мережевий трафік і усуваючи ривки між модами в мультиплеєрі. Немає налаштувань.]]></uk>
+        <cz><![CDATA[Vyžadovaná knihovna pro ekosystém modů Realistic Farming. Nahrazuje vlastní síťové události každého doprovodného modu jedním dávkovým synchronizačním cyklem, snižuje síťový provoz a odstraňuje trhání mezi mody v multiplayeru. Žádná nastavení.]]></cz>
+        <hu><![CDATA[Szükséges könyvtár a Realistic Farming mod-ökoszisztémához. Minden társmod saját többjátékos eseményeit egyetlen kötegelt szinkronizációs ciklusra cseréli, csökkentve a hálózati forgalmat és megszüntetve a modok közti akadozást többjátékos módban. Nincs beállítás.]]></hu>
+        <ro><![CDATA[Bibliotecă necesară pentru ecosistemul de moduri Realistic Farming. Înlocuiește evenimentele multiplayer proprii ale fiecărui mod însoțitor cu un singur ciclu de sincronizare grupat, reducând traficul de rețea și eliminând sacadările dintre moduri în multiplayer. Fără setări.]]></ro>
+        <tr><![CDATA[Realistic Farming mod ekosistemi için gerekli kütüphane. Her yardımcı modun kendi çok oyunculu olaylarını tek bir toplu senkronizasyon döngüsüyle değiştirir, ağ trafiğini azaltır ve çok oyuncuda modlar arası takılmayı durdurur. Ayar yok.]]></tr>
+        <fi><![CDATA[Realistic Farming -modiekosysteemin vaatima kirjasto. Korvaa jokaisen liitännäismodin omat moninpelitapahtumat yhdellä niputetulla synkronointisyklillä, mikä vähentää verkkoliikennettä ja lopettaa modien välisen nykimisen moninpelissä. Ei asetuksia.]]></fi>
+        <no><![CDATA[Nødvendig bibliotek for Realistic Farming-modøkosystemet. Erstatter hver tilhørende mods egne flerspillerhendelser med én samlet synkroniseringssyklus, som reduserer nettverkstrafikk og stopper hakkingen mellom moder i flerspiller. Ingen innstillinger.]]></no>
+        <sv><![CDATA[Obligatoriskt bibliotek för Realistic Farming-modekosystemet. Ersätter varje följemodds egna flerspelarhändelser med en enda samlad synkroniseringscykel, vilket minskar nätverkstrafiken och stoppar hackandet mellan moddar i flerspelarläge. Inga inställningar.]]></sv>
+        <da><![CDATA[Påkrævet bibliotek til Realistic Farming-mod-økosystemet. Erstatter hver ledsagermods egne multiplayer-hændelser med én samlet synkroniseringscyklus, hvilket reducerer netværkstrafik og stopper hakken mellem modder i multiplayer. Ingen indstillinger.]]></da>
+        <kr><![CDATA[Realistic Farming 모드 생태계에 필요한 라이브러리입니다. 각 동반 모드의 자체 멀티플레이어 이벤트를 하나의 일괄 동기화 주기로 대체하여 네트워크 트래픽을 줄이고 멀티플레이어에서 모드 간 끊김을 없앱니다. 설정 없음.]]></kr>
+        <jp><![CDATA[Realistic Farming モッドエコシステムに必要なライブラリです。各関連モッドの独自マルチプレイヤーイベントを1つのバッチ同期サイクルに置き換え、ネットワーク負荷を減らしマルチプレイヤーでのモッド間のカクつきを止めます。設定はありません。]]></jp>
+        <ct><![CDATA[Realistic Farming 模組生態系所需的函式庫。將每個配套模組各自的多人連線事件替換為單一批次同步週期，降低網路流量並消除多人模式中模組間的卡頓。無需設定。]]></ct>
+        <fc><![CDATA[Realistic Farming 模组生态系统所需的库。将每个配套模组各自的多人联机事件替换为单一批次同步周期，降低网络流量并消除多人模式中模组间的卡顿。无需设置。]]></fc>
+        <id><![CDATA[Pustaka yang diperlukan untuk ekosistem mod Realistic Farming. Mengganti event multipemain milik tiap mod pendamping dengan satu siklus sinkronisasi batch, menekan lalu lintas jaringan dan menghentikan patah-patah antar mod di multipemain. Tanpa pengaturan.]]></id>
+        <vi><![CDATA[Thư viện bắt buộc cho hệ sinh thái mod Realistic Farming. Thay các sự kiện nhiều người chơi riêng của từng mod đồng hành bằng một chu kỳ đồng bộ theo lô, giảm lưu lượng mạng và chấm dứt giật hình giữa các mod khi chơi mạng. Không có cài đặt.]]></vi>
+    </description>
+
+    <iconFilename>icon.dds</iconFilename>
+
+    <multiplayer supported="true"/>
+
+    <dependencies>
+        <dependency>FS25_StateLedger</dependency>
+    </dependencies>
+
+    <extraSourceFiles>
+        <sourceFile filename="main.lua" />
+    </extraSourceFiles>
+</modDesc>
