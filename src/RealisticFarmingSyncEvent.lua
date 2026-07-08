@@ -1,25 +1,35 @@
 -- =========================================================
--- FS25_NetworkSync - network event classes
+-- FS25_NetworkSync - network event classes (v2)
 -- =========================================================
 -- Author: TisonK
 -- =========================================================
--- Two event classes carry the entire ecosystem's multiplayer sync,
--- replacing the per-mod event classes:
+-- Three event classes carry the ecosystem's multiplayer sync:
 --
---   RealisticFarmingSyncEvent         server -> client(s): a batch of
---     { modId -> value array }, used for both the 1Hz dirty delta
---     (broadcast) and the full snapshot sent to a joining client.
+--   RealisticFarmingSyncEvent         server -> client(s): a batch of per-module
+--     frames. Used for the 1Hz dirty batch, syncNow, the join snapshot, and the
+--     slow drift-floor full resync. v2 wraps each module's value array in a frame:
 --
---   RealisticFarmingSyncRequestEvent  client -> server: "send me a full
---     snapshot" on join. The server answers with a SyncEvent to just
---     that connection.
+--       frame: modId (string), chunkIndex (int32), chunkCount (int32),
+--              mode (UInt8: 0 FULL / 1 DELTA), subLength (int32), sub-values...
 --
--- Per-element type tagging: each value in an array is written as a UInt8
--- tag followed by the typed value. Integers that fit int32 are sent as
--- int32 (exact, unlike the lossy all-float32 sketch in the brief), so
--- money / counts / ids round-trip exactly; fractional and out-of-range
--- numbers fall back to float32; booleans and strings have their own tags.
--- This is the same tagging the shipped SoilFertilizer setting events use.
+--     A module that fits one event is a single frame (chunkIndex 0, chunkCount 1),
+--     so small and large modules use the exact same frame. A module larger than the
+--     event budget is split into ordered chunks that reassemble on the client. The
+--     value encoding inside a frame is byte-for-byte the v1 typed encoding below:
+--     no new value types were introduced, so a module that never sends a delta and
+--     never splits carries the same value bytes it did in v1.
+--
+--   RealisticFarmingSyncRequestEvent  client -> server: "send me a full snapshot"
+--     on join. The server answers with a SyncEvent (FULL frames) to that connection.
+--
+--   RealisticFarmingActionEvent       client -> server: a validated request for a
+--     server-authoritative action (Path 3). The server authorizes the requester
+--     (master user, or the action's own gate) and applies it; the resulting state
+--     change flags its module dirty and the normal sync path carries the result down.
+--
+-- Per-value type tagging (unchanged from v1): each value is a UInt8 tag then the
+-- typed value. Integers that fit int32 are sent as int32 (exact); fractional or
+-- out-of-range numbers fall back to float32; booleans and strings have their own tags.
 -- =========================================================
 
 RealisticFarmingSyncEvent = {}
@@ -35,19 +45,7 @@ RealisticFarmingSyncEvent.T_STRING = 3
 local INT32_MIN = -2147483648
 local INT32_MAX = 2147483647
 
-function RealisticFarmingSyncEvent.emptyNew()
-    local self = Event.new(RealisticFarmingSyncEvent_mt)
-    return self
-end
-
----@param payload table  { modId(string) -> array(integer-indexed) }
-function RealisticFarmingSyncEvent.new(payload)
-    local self = RealisticFarmingSyncEvent.emptyNew()
-    self.payload = payload or {}
-    return self
-end
-
--- Write a single tagged value.
+-- Write a single tagged value (shared by sync frames and action args).
 local function writeValue(streamId, v)
     local t = type(v)
     if t == "boolean" then
@@ -59,7 +57,6 @@ local function writeValue(streamId, v)
             streamWriteUInt8(streamId, RealisticFarmingSyncEvent.T_INT)
             streamWriteInt32(streamId, v)
         else
-            -- fractional, out of int32 range, or non-finite -> float32
             streamWriteUInt8(streamId, RealisticFarmingSyncEvent.T_FLOAT)
             streamWriteFloat32(streamId, (v == v) and v or 0)
         end
@@ -67,8 +64,7 @@ local function writeValue(streamId, v)
         streamWriteUInt8(streamId, RealisticFarmingSyncEvent.T_STRING)
         streamWriteString(streamId, v)
     else
-        -- unsupported (nil/table/function): send a 0 float so index alignment holds
-        NSLogger.warning("sync: unsupported array value of type %s, sending 0", t)
+        NSLogger.warning("sync: unsupported value of type %s, sending 0", t)
         streamWriteUInt8(streamId, RealisticFarmingSyncEvent.T_FLOAT)
         streamWriteFloat32(streamId, 0)
     end
@@ -87,47 +83,66 @@ local function readValue(streamId)
     end
 end
 
+-- Exposed so the core and tests can reuse the exact encoding.
+RealisticFarmingSyncEvent.writeValue = writeValue
+RealisticFarmingSyncEvent.readValue  = readValue
+
+function RealisticFarmingSyncEvent.emptyNew()
+    return Event.new(RealisticFarmingSyncEvent_mt)
+end
+
+---@param frames table  array of { modId, chunkIndex, chunkCount, mode, values }
+function RealisticFarmingSyncEvent.new(frames)
+    local self = RealisticFarmingSyncEvent.emptyNew()
+    self.frames = frames or {}
+    return self
+end
+
 function RealisticFarmingSyncEvent:writeStream(streamId, connection)
-    local modIds = {}
-    for modId in pairs(self.payload) do
-        modIds[#modIds + 1] = modId
-    end
-    streamWriteInt32(streamId, #modIds)
-    for _, modId in ipairs(modIds) do
-        local arr = self.payload[modId]
-        streamWriteString(streamId, modId)
-        local n = #arr
+    streamWriteInt32(streamId, #self.frames)
+    for _, f in ipairs(self.frames) do
+        streamWriteString(streamId, f.modId)
+        streamWriteInt32(streamId, f.chunkIndex or 0)
+        streamWriteInt32(streamId, f.chunkCount or 1)
+        streamWriteUInt8(streamId, f.mode or 0)
+        local values = f.values or {}
+        local n = #values
         streamWriteInt32(streamId, n)
         for i = 1, n do
-            writeValue(streamId, arr[i])
+            writeValue(streamId, values[i])
         end
     end
 end
 
 function RealisticFarmingSyncEvent:readStream(streamId, connection)
-    self.payload = {}
+    self.frames = {}
     local count = streamReadInt32(streamId)
     for _ = 1, count do
-        local modId = streamReadString(streamId)
-        local n = streamReadInt32(streamId)
-        local arr = {}
+        local modId      = streamReadString(streamId)
+        local chunkIndex = streamReadInt32(streamId)
+        local chunkCount = streamReadInt32(streamId)
+        local mode       = streamReadUInt8(streamId)
+        local n          = streamReadInt32(streamId)
+        local values = {}
         for i = 1, n do
-            arr[i] = readValue(streamId)
+            values[i] = readValue(streamId)
         end
-        self.payload[modId] = arr
+        self.frames[#self.frames + 1] = {
+            modId = modId, chunkIndex = chunkIndex, chunkCount = chunkCount,
+            mode = mode, values = values,
+        }
     end
     self:run(connection)
 end
 
 function RealisticFarmingSyncEvent:run(connection)
     -- Only a pure client applies received state. On a listen server (host)
-    -- getIsServer() is true and the host already holds authoritative state,
-    -- so it never applies its own broadcast.
+    -- getIsServer() is true and the host already holds authoritative state.
     if g_currentMission ~= nil and g_currentMission:getIsServer() then
         return
     end
     if g_networkSync ~= nil then
-        g_networkSync:applyPayload(self.payload)
+        g_networkSync:receiveFrames(self.frames)
     end
 end
 
@@ -156,11 +171,67 @@ function RealisticFarmingSyncRequestEvent:readStream(streamId, connection)
 end
 
 function RealisticFarmingSyncRequestEvent:run(connection)
-    -- Server side only: answer the requesting connection with a full snapshot.
     if g_currentMission == nil or not g_currentMission:getIsServer() then
         return
     end
     if g_networkSync ~= nil then
         g_networkSync:sendFullSnapshotTo(connection)
+    end
+end
+
+-- =========================================================
+-- Action channel (client -> server, validated) - Path 3
+-- =========================================================
+-- Modeled exactly on the request event above: a working client-to-server event
+-- whose run(connection) guards on getIsServer. We add a typed-arg payload and route
+-- to the server-side authorization + dispatch in NetworkSync:_applyAction, which
+-- resolves the connection to its user and enforces the action's admin gate. A
+-- rejected or unknown action applies nothing (a plain early return), matching the
+-- request event's no-op-on-non-server pattern.
+
+RealisticFarmingActionEvent = {}
+local RealisticFarmingActionEvent_mt = Class(RealisticFarmingActionEvent, Event)
+InitEventClass(RealisticFarmingActionEvent, "RealisticFarmingActionEvent")
+
+function RealisticFarmingActionEvent.emptyNew()
+    return Event.new(RealisticFarmingActionEvent_mt)
+end
+
+---@param actionId string  registered action id
+---@param args table       typed arg array (int/float/bool/string), may be nil
+function RealisticFarmingActionEvent.new(actionId, args)
+    local self = RealisticFarmingActionEvent.emptyNew()
+    self.actionId = actionId or ""
+    self.args = args or {}
+    return self
+end
+
+function RealisticFarmingActionEvent:writeStream(streamId, connection)
+    streamWriteString(streamId, self.actionId)
+    local n = #self.args
+    streamWriteInt32(streamId, n)
+    for i = 1, n do
+        writeValue(streamId, self.args[i])
+    end
+end
+
+function RealisticFarmingActionEvent:readStream(streamId, connection)
+    self.actionId = streamReadString(streamId)
+    local n = streamReadInt32(streamId)
+    self.args = {}
+    for i = 1, n do
+        self.args[i] = readValue(streamId)
+    end
+    self:run(connection)
+end
+
+function RealisticFarmingActionEvent:run(connection)
+    -- Server-only, same guard as the request event. Authorization + dispatch lives
+    -- in the core so it can resolve the connection to its user.
+    if g_currentMission == nil or not g_currentMission:getIsServer() then
+        return
+    end
+    if g_networkSync ~= nil then
+        g_networkSync:_applyAction(self.actionId, self.args, connection)
     end
 end
