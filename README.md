@@ -1,6 +1,6 @@
 # FS25_NetworkSync
 
-**Version:** 1.0.0.0
+**Version:** 2.0.0.0
 **Author:** TisonK
 
 The multiplayer network bedrock of the Realistic Farming mod ecosystem. NetworkSync is mod 2 in the load order (after StateLedger). It replaces each companion mod's own network event classes with one batched sync cycle: companions register a schema and call `markDirty`, and NetworkSync serializes, batches at 1Hz, and delivers. This cuts multiplayer traffic and stops the cross-mod rubber-banding that comes from many mods each syncing on their own timer.
@@ -36,9 +36,49 @@ Each array element is sent with a one-byte type tag: booleans as a bool, whole n
 
 ## Join sync
 
-When a client joins mid-game it requests a full snapshot from the server (retried until the connection is ready), and the server answers that one connection with every registered module's current state. After that, the client receives only the 1Hz dirty deltas.
+When a client joins mid-game it requests a full snapshot from the server (retried until the connection is ready), and the server answers that one connection with every registered module's current state. After that, the client receives only the 1Hz dirty updates.
 
 For a change that must reach clients immediately rather than waiting up to a second (for example an admin setting applied server-side), the server can call `g_networkSync:syncNow(modId)`.
+
+## Sending only what changed (v2, optional)
+
+Everything above is unchanged from v1. The v2 additions are additive opt-ins: a module that ignores them behaves exactly as it did in v1.
+
+A heavy module that changes one field at a time does not need to resend its whole array every tick. Register two more callbacks and NetworkSync sends only the changed elements:
+
+```lua
+g_networkSync:registerModule("MyMod_Sync", {
+    channel      = "MyMod_Sync",
+    onWriteState = function()       return self:toArray() end,        -- still required (snapshots + drift floor)
+    onReadState  = function(array)  self:fromArray(array) end,
+    onWriteDelta = function()       return self:changedPairs() end,   -- server: { idx1, val1, idx2, val2, ... }
+    onReadDelta  = function(pairs)  self:applyPairs(pairs) end,       -- client: apply the changed indices
+})
+```
+
+- The 1Hz batch sends `onWriteDelta` (mode DELTA) when it is present; the join snapshot, `syncNow`, and the drift floor always send the full `onWriteState`, so `onWriteState` stays required.
+- Two guarantees hold the client consistent: a client applies no delta for a module until it has applied that module's full snapshot (deltas that arrive first are held, then flushed in order), and a slow full resync (the drift floor) self-heals any missed delta within a bounded window.
+
+## Large modules (v2)
+
+Any module whose payload for a tick exceeds a safe per-event size is split into ordered chunks that reassemble on the client, including the join snapshot. A module that fits one event is a single chunk, so nothing changes for light modules. This is automatic; companions do nothing.
+
+## Server-authoritative actions (v2)
+
+The one sanctioned client-initiated path. A client asks the server to run a named action; the server authorizes the requester and applies it, and the resulting state change flows back down through the normal sync path. Use it for admin-gated or server-authoritative actions (settings, recovery hatches), never routine gameplay traffic.
+
+```lua
+-- server: register the handler once
+g_networkSync:registerAction("MyMod_Reset", {
+    onAction  = function(userId, args) self:resetField(args[1]) end,
+    adminOnly = true,   -- default true: only a master user (admin) may run it
+})
+
+-- client (or host): request it
+g_networkSync:requestAction("MyMod_Reset", { fieldId })
+```
+
+An unauthorized, unknown, or malformed request applies nothing (a plain server-side early return). On a listen-server host the request applies directly.
 
 ## Single-player
 
