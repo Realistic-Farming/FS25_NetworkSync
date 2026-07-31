@@ -70,9 +70,12 @@ function NetworkSync.new()
     self.snapshotReceived = {} -- modId -> bool (a FULL has been applied)
     self.pendingDeltas   = {}  -- modId -> array of delta arrays held until the snapshot lands
 
-    -- Client join-sync request state
+    -- Client join-sync request state.
+    --
+    -- THERE IS NO "ASKED" FLAG ANY MORE, AND ITS ABSENCE IS THE FIX. Latching on our
+    -- own send meant one unsendable request ended the handshake for the session; the
+    -- retry budget below is spent against the server's REPLY instead. See update().
     self.needsFullSync   = false
-    self.fullSyncAsked   = false
     self.joinAttempts    = 0
     self.joinTimer       = 0
 
@@ -433,13 +436,37 @@ end
 -- Client: request a full snapshot on join
 -- =========================================================
 
+--- Ask the server for a full snapshot.
+---
+--- THE RETURN IS "WE ATTEMPTED", NOT "THE SERVER GOT IT", and the caller must treat it
+--- that way. A non-nil server connection is not the same thing as a connection whose
+--- event table is valid: on join, `getServerConnection()` returns an object roughly a
+--- quarter of a second before the join actually completes, and a send into that window
+--- is rejected by the engine with "Invalid event id" while every check here passes.
+---
+--- The old version returned true on `serverConn ~= nil` alone and the caller latched
+--- on it, which ended the handshake permanently on a request that never arrived. The
+--- only trustworthy evidence is the reply; see update().
+---@return boolean attempted
 function NetworkSync:_sendFullSyncRequest()
-    if g_client ~= nil then
-        local serverConn = g_client:getServerConnection()
-        if serverConn ~= nil then
-            serverConn:sendEvent(RealisticFarmingSyncRequestEvent.new())
-            return true
-        end
+    if g_client == nil then return false end
+    local serverConn = g_client:getServerConnection()
+    if serverConn == nil then return false end
+    -- Wrapped because a rejected send raises rather than returning a status, and a
+    -- doomed early attempt must not take the update loop down with it.
+    local ok = pcall(function()
+        serverConn:sendEvent(RealisticFarmingSyncRequestEvent.new())
+    end)
+    return ok
+end
+
+--- Has the server answered? ANY module snapshot applied is proof that the request
+--- arrived and was served, which is the one signal that does not depend on knowing
+--- whether a send succeeded.
+---@return boolean answered
+function NetworkSync:_fullSyncAnswered()
+    for _ in pairs(self.snapshotReceived) do
+        return true
     end
     return false
 end
@@ -452,7 +479,6 @@ function NetworkSync:onMissionLoaded()
 
     if g_currentMission ~= nil and not g_currentMission:getIsServer() then
         self.needsFullSync = true
-        self.fullSyncAsked = false
         self.joinAttempts  = 0
         self.joinTimer     = 0
     end
@@ -479,17 +505,49 @@ function NetworkSync:update(dt)
             self.driftAccumulator = self.driftAccumulator - NetworkSync.DRIFT_FLOOR_MS
             self:_broadcastDriftFloor()
         end
-    elseif self.needsFullSync and not self.fullSyncAsked then
-        self.joinTimer = self.joinTimer + dt
-        if self.joinAttempts == 0 or self.joinTimer >= NetworkSync.JOIN_REQUEST_INTERVAL then
-            self.joinTimer = 0
-            self.joinAttempts = self.joinAttempts + 1
-            if self:_sendFullSyncRequest() then
-                self.fullSyncAsked = true
-                NSLogger.debug("Full-sync request sent (attempt %d)", self.joinAttempts)
-            elseif self.joinAttempts >= NetworkSync.JOIN_REQUEST_MAX then
-                self.needsFullSync = false
-                NSLogger.warning("Full-sync request gave up after %d attempts", self.joinAttempts)
+    elseif self.needsFullSync then
+        -- THE HANDSHAKE ENDS WHEN THE SERVER ANSWERS, NOT WHEN WE ASK.
+        --
+        -- The old loop latched `fullSyncAsked` on its own send returning true, and
+        -- that send returned true whenever a server connection object existed. On join
+        -- the connection exists about 235 ms before the join completes, so the very
+        -- first attempt fired into a connection with no valid event table, was
+        -- rejected by the engine, and latched anyway. Five retries at two seconds were
+        -- provisioned and none of them were ever spent.
+        --
+        -- What that cost is worth stating, because it is why this is graded HIGH: past
+        -- the first quarter second there is no error line at all. Every companion mod
+        -- simply receives nothing forever, and each one looks locally broken in its own
+        -- way. Three teams chase three phantom bugs.
+        if self:_fullSyncAnswered() then
+            self.needsFullSync = false
+            NSLogger.debug("Full sync answered after %d request(s)", self.joinAttempts)
+        else
+            -- The first ask now waits one interval too. The old loop fired immediately
+            -- on the first update tick, which is measurably inside the window where the
+            -- send cannot work, so it bought a guaranteed engine error and no sync. Two
+            -- seconds is nothing against a handshake that then batches at 1 Hz.
+            self.joinTimer = self.joinTimer + dt
+            if self.joinTimer >= NetworkSync.JOIN_REQUEST_INTERVAL then
+                self.joinTimer = 0
+                self.joinAttempts = self.joinAttempts + 1
+                self:_sendFullSyncRequest()
+                NSLogger.debug("Full-sync request sent (attempt %d of %d)",
+                    self.joinAttempts, NetworkSync.JOIN_REQUEST_MAX)
+
+                if self.joinAttempts >= NetworkSync.JOIN_REQUEST_MAX then
+                    self.needsFullSync = false
+                    if next(self.schemas) == nil then
+                        -- Nothing registered, so nothing to be synced and nothing wrong.
+                        NSLogger.debug("Full-sync budget spent with no modules registered; nothing to sync")
+                    else
+                        NSLogger.warning(
+                            "Full-sync request UNANSWERED after %d attempts. This client is running on " ..
+                            "local state only and companion mods will read empty. The server's %.0fs " ..
+                            "drift-floor rebroadcast is the remaining path to recovery.",
+                            self.joinAttempts, NetworkSync.DRIFT_FLOOR_MS / 1000)
+                    end
+                end
             end
         end
     end
