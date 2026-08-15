@@ -18,6 +18,10 @@
 local modDirectory = g_currentModDirectory
 
 source(modDirectory .. "src/Logger.lua")
+-- BUILD 22:42: sourced here, at file load, rather than from the Mission00.load
+-- append below. The wraps have to exist before the first join OBJECT_UPDATE,
+-- and convertFromNetworkFilename is also called during map and save load.
+source(modDirectory .. "src/JoinFilenameGuard.lua")
 source(modDirectory .. "src/RealisticFarmingSyncEvent.lua")
 source(modDirectory .. "src/NetworkSync.lua")
 
