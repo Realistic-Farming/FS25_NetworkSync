@@ -8,3 +8,6 @@ tools/test/node_modules/
 Thumbs.db
 .DS_Store
 *.swp
+
+# Pre-commit gate deps (tools/test/ - installed by npm, never shipped)
+node_modules/
