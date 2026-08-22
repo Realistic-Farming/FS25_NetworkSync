@@ -30,7 +30,7 @@
 -- Path 3 (action channel): the one sanctioned client-initiated write, server-authorized.
 -- =========================================================
 
-NetworkSync = {}
+NetworkSync = NetworkSync or {}
 local NetworkSync_mt = Class(NetworkSync)
 
 NetworkSync.TICK_MS = 1000            -- 1Hz batch

@@ -32,7 +32,7 @@
 -- out-of-range numbers fall back to float32; booleans and strings have their own tags.
 -- =========================================================
 
-RealisticFarmingSyncEvent = {}
+RealisticFarmingSyncEvent = RealisticFarmingSyncEvent or {}
 local RealisticFarmingSyncEvent_mt = Class(RealisticFarmingSyncEvent, Event)
 InitEventClass(RealisticFarmingSyncEvent, "RealisticFarmingSyncEvent")
 
@@ -150,7 +150,7 @@ end
 -- Full-sync request (client -> server, on join)
 -- =========================================================
 
-RealisticFarmingSyncRequestEvent = {}
+RealisticFarmingSyncRequestEvent = RealisticFarmingSyncRequestEvent or {}
 local RealisticFarmingSyncRequestEvent_mt = Class(RealisticFarmingSyncRequestEvent, Event)
 InitEventClass(RealisticFarmingSyncRequestEvent, "RealisticFarmingSyncRequestEvent")
 
@@ -189,7 +189,7 @@ end
 -- rejected or unknown action applies nothing (a plain early return), matching the
 -- request event's no-op-on-non-server pattern.
 
-RealisticFarmingActionEvent = {}
+RealisticFarmingActionEvent = RealisticFarmingActionEvent or {}
 local RealisticFarmingActionEvent_mt = Class(RealisticFarmingActionEvent, Event)
 InitEventClass(RealisticFarmingActionEvent, "RealisticFarmingActionEvent")
 
