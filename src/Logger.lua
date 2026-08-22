@@ -6,7 +6,7 @@
 -- Mod-prefixed logging so lines are greppable by "[NetworkSync]".
 -- =========================================================
 
-NSLogger = {}
+NSLogger = NSLogger or {}
 NSLogger.PREFIX = "[NetworkSync] "
 NSLogger.debugEnabled = false
 

@@ -15,7 +15,14 @@
 -- registerModule during their own module load.
 -- =========================================================
 
-local modDirectory = g_currentModDirectory
+-- Hot-reload latch (FuelCosts reference): g_currentModDirectory and
+-- g_currentModName are nil on a live re-source, so they are latched into
+-- module globals on first load, with a g_modsDirectory loose-folder fallback.
+NetworkSyncModDirectory = NetworkSyncModDirectory
+    or g_currentModDirectory
+    or (g_modsDirectory ~= nil and (g_modsDirectory .. "FS25_NetworkSync/") or nil)
+NetworkSyncModName = NetworkSyncModName or g_currentModName or "FS25_NetworkSync"
+local modDirectory = NetworkSyncModDirectory
 
 source(modDirectory .. "src/Logger.lua")
 -- BUILD 22:42: sourced here, at file load, rather than from the Mission00.load
