@@ -13,8 +13,14 @@ the repo's git history and README.
 
 ## [Unreleased]
 
+## [2.0.1.0] - 2026-08-26
+
 ### Added
 - Changelog file established (suite ruling 2026-08-22).
+
+### Fixed
+- A blank join filename no longer aborts the rest of the sync during multiplayer join.
+- The join handshake now latches on the server's reply instead of the client's own send.
 
 ## [2.0.0.1] - 2026-08-22
 
