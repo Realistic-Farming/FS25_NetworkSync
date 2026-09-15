@@ -30,7 +30,10 @@ source(modDirectory .. "src/Logger.lua")
 -- and convertFromNetworkFilename is also called during map and save load.
 source(modDirectory .. "src/JoinFilenameGuard.lua")
 source(modDirectory .. "src/RealisticFarmingSyncEvent.lua")
+-- NS-7: the scoped event class registers at file load like the public ones.
+source(modDirectory .. "src/NetworkSyncScopedEvent.lua")
 source(modDirectory .. "src/NetworkSync.lua")
+source(modDirectory .. "src/NetworkSyncScoped.lua")
 
 local networkSync = NetworkSync.new()
 getfenv(0)["g_networkSync"] = networkSync
@@ -39,9 +42,41 @@ getfenv(0)["g_networkSync"] = networkSync
 -- Mission lifecycle hooks
 -- ---------------------------------------------------------
 
+-- NS-7: scoped cleanup rides on the mission's own onConnectionClosed
+-- (FSBaseMission.lua:834). The wrapper is installed on the mission instance,
+-- calls the original exactly once with its arguments and returns, and is
+-- restored at teardown only if it is still the current method; otherwise it
+-- retires as a no-op so another owner's chain is never cut.
+local connectionClosedWrapper = nil
+local connectionClosedOriginal = nil
+local connectionClosedRetired = false
+
+local function installConnectionClosedWrapper(mission)
+    if mission == nil or type(mission.onConnectionClosed) ~= "function" then return end
+    connectionClosedOriginal = mission.onConnectionClosed
+    connectionClosedRetired = false
+    connectionClosedWrapper = function(self, connection, disconnectReason)
+        if not connectionClosedRetired and g_networkSync ~= nil and g_networkSync._scopedOnConnectionClosed ~= nil then
+            g_networkSync:_scopedOnConnectionClosed(connection)
+        end
+        return connectionClosedOriginal(self, connection, disconnectReason)
+    end
+    mission.onConnectionClosed = connectionClosedWrapper
+end
+
+local function removeConnectionClosedWrapper(mission)
+    connectionClosedRetired = true
+    if mission ~= nil and connectionClosedWrapper ~= nil and mission.onConnectionClosed == connectionClosedWrapper then
+        mission.onConnectionClosed = connectionClosedOriginal
+    end
+    connectionClosedWrapper = nil
+    connectionClosedOriginal = nil
+end
+
 local function onMissionLoad(mission)
     if mission ~= nil then
         mission.networkSync = networkSync
+        installConnectionClosedWrapper(mission)
     end
     NSLogger.info("NetworkSync active (mod 2, multiplayer batch sync)")
 end
@@ -54,7 +89,9 @@ local function onMissionUpdate(mission, dt)
     networkSync:update(dt)
 end
 
-local function onMissionDelete()
+local function onMissionDelete(mission)
+    networkSync:onMissionDelete()
+    removeConnectionClosedWrapper(mission or g_currentMission)
     getfenv(0)["g_networkSync"] = nil
     if g_currentMission ~= nil then
         g_currentMission.networkSync = nil

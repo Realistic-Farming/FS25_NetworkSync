@@ -101,6 +101,13 @@ function NetworkSync:registerModule(modId, schema)
         return false
     end
 
+    -- NS-7: an id is public or scoped, never both. A live scoped registration
+    -- is preserved and the public request refused.
+    if self.scopedSchemas ~= nil and self.scopedSchemas[modId] ~= nil then
+        NSLogger.warning("registerModule('%s'): id is a live SCOPED module, refusing (kinds cannot mix)", modId)
+        return false
+    end
+
     if self.schemas[modId] == nil then
         table.insert(self.registerOrder, modId)
     else
@@ -122,6 +129,10 @@ end
 function NetworkSync:markDirty(modId)
     if self.schemas[modId] ~= nil then
         self.dirtyMods[modId] = true
+    elseif self.scopedSchemas ~= nil and self.scopedSchemas[modId] ~= nil then
+        -- NS-7: a scoped id routes through its scoped path and never enters
+        -- the public dirty list.
+        self:_scopedMarkDirty(modId)
     end
 end
 
@@ -288,6 +299,12 @@ function NetworkSync:syncNow(modId)
     if g_currentMission == nil or not g_currentMission:getIsServer() or g_server == nil then
         return
     end
+    if self.scopedSchemas ~= nil and self.scopedSchemas[modId] ~= nil then
+        -- NS-7: FULL to each scoped subscriber, never a broadcast.
+        self:_scopedSyncNow(modId)
+        return
+    end
+    if self.schemas[modId] == nil then return end
     self.dirtyMods[modId] = false
     self:_sendModules({ modId }, true, function(event) g_server:broadcastEvent(event) end)
 end
@@ -482,6 +499,18 @@ function NetworkSync:onMissionLoaded()
         self.joinAttempts  = 0
         self.joinTimer     = 0
     end
+
+    -- NS-7: fresh scoped maps and, on the server, a fresh serverSession.
+    if self._scopedOnMissionLoaded ~= nil then
+        self:_scopedOnMissionLoaded()
+    end
+end
+
+--- Mission teardown for the scoped side; the public registry is untouched.
+function NetworkSync:onMissionDelete()
+    if self._scopedOnMissionDelete ~= nil then
+        self:_scopedOnMissionDelete()
+    end
 end
 
 -- =========================================================
@@ -498,13 +527,24 @@ function NetworkSync:update(dt)
         if self.accumulator >= NetworkSync.TICK_MS then
             self.accumulator = self.accumulator - NetworkSync.TICK_MS
             self:_broadcastDirty()
+            -- NS-7: scoped subscribers on the same cadence, private route.
+            if self._scopedPublishAll ~= nil then self:_scopedPublishAll() end
         end
 
         self.driftAccumulator = self.driftAccumulator + dt
         if self.driftAccumulator >= NetworkSync.DRIFT_FLOOR_MS then
             self.driftAccumulator = self.driftAccumulator - NetworkSync.DRIFT_FLOOR_MS
             self:_broadcastDriftFloor()
+            if self._scopedDriftFloor ~= nil then self:_scopedDriftFloor() end
         end
+    else
+        -- NS-7: scoped subscription bursts and recovery run beside the public
+        -- join handshake, independently of it.
+        if self._scopedClientUpdate ~= nil then self:_scopedClientUpdate(dt) end
+    end
+
+    if g_currentMission:getIsServer() then
+        -- server cadence handled above
     elseif self.needsFullSync then
         -- THE HANDSHAKE ENDS WHEN THE SERVER ANSWERS, NOT WHEN WE ASK.
         --
@@ -574,6 +614,9 @@ function NetworkSync:getStatus()
     end
     for actionId, a in pairs(self.actions) do
         table.insert(lines, string.format("  action %s (adminOnly=%s)", actionId, tostring(a.adminOnly)))
+    end
+    if self.getScopedStatusLines ~= nil then
+        for _, line in ipairs(self:getScopedStatusLines()) do table.insert(lines, line) end
     end
     return table.concat(lines, "\n")
 end
