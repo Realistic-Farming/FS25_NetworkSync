@@ -81,6 +81,12 @@ NetworkSyncScoped.REASON_NEW_GENERATION         = "NEW_GENERATION"
 NetworkSyncScoped.REASON_MISSION_END            = "MISSION_END"
 NetworkSyncScoped.REASON_LOCAL_CONTEXT_CHANGED  = "LOCAL_CONTEXT_CHANGED"
 NetworkSyncScoped.REASON_UNACKNOWLEDGED         = "UNACKNOWLEDGED"
+NetworkSyncScoped.REASON_USER_CHANGED           = "USER_CHANGED"
+NetworkSyncScoped.REASON_RECOVERY_BUDGET        = "RECOVERY_BUDGET"
+-- Capability reason while a mission exists but loadMission00Finished has not
+-- run: compatible and initializing, so a consumer (SG-1) treats it as WAITING
+-- and asks again, never as absent.
+NetworkSyncScoped.REASON_WAITING_MISSION_LOAD   = "WAITING_MISSION_LOAD"
 
 -- Value tags inside a PUBLICATION body.
 NetworkSyncScoped.TAG_BOOL   = "BOOL"
@@ -248,6 +254,10 @@ function NetworkSync:unregisterScopedModule(modId)
             end
         end
     else
+        -- Tell the server first, so it stops building and sending for a view
+        -- nobody applies any more; then clear locally.
+        local cs = self.scopedClient[modId]
+        if cs ~= nil then self:_scopedSendUnsubscribe(modId, cs) end
         self:_scopedClientClear(modId, S.REASON_MODULE_UNREGISTERED, true)
         self.scopedClient[modId] = nil
     end
@@ -266,15 +276,32 @@ end
 
 --- Capability record for consumers. `ready` means this mission's scoped state
 --- and the event class exist, not that any remote connection has event ids.
+--- reasonCode: READY; WAITING_MISSION_LOAD when a mission exists but
+--- loadMission00Finished has not run yet (compatible, initializing: ask
+--- again); NOT_INITIALIZED when there is no mission at all. `waiting` is the
+--- boolean form of the middle case.
 function NetworkSync:getScopedCapabilities()
     self:_ensureScopedState()
     local ready = self.scopedReady == true and NetworkSyncScopedEvent ~= nil
+    local waiting = (not ready) and g_currentMission ~= nil
+    local reasonCode = "NOT_INITIALIZED"
+    if ready then reasonCode = "READY" elseif waiting then reasonCode = S.REASON_WAITING_MISSION_LOAD end
     return {
         bootstrapVersion = S.BOOTSTRAP_VERSION,
         protocolVersions = { unpack(S.PROTOCOL_VERSIONS) },
         ready = ready,
-        reasonCode = ready and "READY" or "NOT_INITIALIZED",
+        waiting = waiting,
+        reasonCode = reasonCode,
     }
+end
+
+--- The local farm id on this client (FSBaseMission:getFarmId without a
+--- connection, FSBaseMission.lua:1067), or nil when unknown.
+function NetworkSync:_scopedLocalFarmId()
+    if g_currentMission == nil or g_currentMission.getFarmId == nil then return nil end
+    local ok, id = pcall(g_currentMission.getFarmId, g_currentMission)
+    if ok then return id end
+    return nil
 end
 
 function NetworkSync:_isServer()
@@ -304,9 +331,14 @@ function NetworkSync:_scopedOnMissionLoaded()
     -- Registrations made by companions at their own load time (before this
     -- point) are kept; the previous mission's schemas were dropped at its
     -- teardown, so every producer here registered for this mission.
-    -- Client: a local farm change invalidates every scoped view at once.
-    if not self:_isServer() and g_messageCenter ~= nil and MessageType ~= nil and MessageType.PLAYER_FARM_CHANGED ~= nil then
-        g_messageCenter:subscribe(MessageType.PLAYER_FARM_CHANGED, self._onScopedLocalContextChanged, self)
+    -- Client: the local player's own farm change invalidates every scoped
+    -- view at once. The engine publishes PLAYER_FARM_CHANGED for ANY player's
+    -- switch, so the handler checks whose switch it was.
+    if not self:_isServer() then
+        self.scopedLocalFarmId = self:_scopedLocalFarmId()
+        if g_messageCenter ~= nil and MessageType ~= nil and MessageType.PLAYER_FARM_CHANGED ~= nil then
+            g_messageCenter:subscribe(MessageType.PLAYER_FARM_CHANGED, self._onScopedLocalContextChanged, self)
+        end
     end
 end
 
@@ -329,8 +361,19 @@ function NetworkSync:_scopedOnMissionDelete()
     end
 end
 
-function NetworkSync:_onScopedLocalContextChanged()
+--- PLAYER_FARM_CHANGED handler. The engine publishes it on every client for
+--- any player's switch (PlayerSwitchedFarmEvent.run publishes with that
+--- player, player/events/PlayerSwitchedFarmEvent.lua:41-42, broadcast from
+--- PlayerSetFarmEvent.lua:57; MessageCenter calls callback(target, player),
+--- MessageCenter.lua:101). Only the local player's own switch, or an actual
+--- change of the local farm id, clears and re-subscribes the scoped views.
+function NetworkSync:_onScopedLocalContextChanged(player)
     if self:_isServer() or self.scopedClient == nil then return end
+    local localFarm = self:_scopedLocalFarmId()
+    local isLocalPlayer = player ~= nil and g_localPlayer ~= nil and player == g_localPlayer
+    local farmChanged = localFarm ~= self.scopedLocalFarmId
+    if not isLocalPlayer and not farmChanged then return end
+    self.scopedLocalFarmId = localFarm
     for modId in pairs(self.scopedSchemas or {}) do
         local cs = self.scopedClient[modId]
         if cs == nil or not cs.terminal then
@@ -571,8 +614,13 @@ function NetworkSync:_scopedPublishTo(connection, modId, sub)
     -- The connection must still be current and the same trusted user.
     if not connectionIsCurrent(connection) then return end
     local userId, farmId, actorState = self:_scopedResolveActor(connection)
-    if sub.userId ~= nil and userId ~= sub.userId then
+    if sub.userId == nil then
+        -- A SUBSCRIBE that arrived before the user record existed: bind the
+        -- user at the first resolve so the same-user check can arm.
+        sub.userId = userId
+    elseif userId ~= sub.userId then
         NSLogger.debug("scoped '%s': connection changed user, dropping subscription", modId)
+        self:_scopedSendControl(connection, modId, sub, S.STATE_UNAVAILABLE, S.REASON_USER_CHANGED)
         mods[modId] = nil
         return
     end
@@ -582,18 +630,25 @@ function NetworkSync:_scopedPublishTo(connection, modId, sub)
     if sub.previous ~= nil and not forceFull then
         previous = { viewKey = sub.previous.viewKey, viewEpoch = sub.previous.viewEpoch, dataRevision = sub.previous.dataRevision }
     end
-    local context = {
-        connection = connection,
-        connectionId = self:_scopedConnectionId(connection),
-        userId = userId,
-        farmId = farmId,
-        actorState = actorState,
-        serverSession = self.scopedServerSession,
-        subscriptionId = sub.subscriptionId,
-        modId = modId,
-    }
-    local result = self:_scopedCallProducer(schema, context, previous, forceFull)
-    context.connection = nil
+    -- A detached context is built immediately before EVERY producer call and
+    -- its connection is cleared right after; a forced re-call never reuses a
+    -- table the first call may have mutated or that has lost its connection.
+    local function callProducer(prev, force)
+        local context = {
+            connection = connection,
+            connectionId = self:_scopedConnectionId(connection),
+            userId = userId,
+            farmId = farmId,
+            actorState = actorState,
+            serverSession = self.scopedServerSession,
+            subscriptionId = sub.subscriptionId,
+            modId = modId,
+        }
+        local r = self:_scopedCallProducer(schema, context, prev, force)
+        context.connection = nil
+        return r
+    end
+    local result = callProducer(previous, forceFull)
 
     if result.state ~= S.STATE_READY then
         -- Non-READY invalidates the usable replica; the next READY needs a
@@ -610,12 +665,28 @@ function NetworkSync:_scopedPublishTo(connection, modId, sub)
         return
     end
 
-    -- READY. Decide epoch reset and the mode we can actually send.
-    local needReset = sub.previous == nil or sub.needsEpoch == true or sub.previous.viewKey ~= result.viewKey
+    -- READY. A forced FULL is enforced, not merely requested: a producer that
+    -- answers UNCHANGED or DELTA to forceFull gets one forced rebuild, and if
+    -- that is still not FULL the subscriber is told ERROR rather than silently
+    -- kept on a replica the server meant to replace.
     local mode = result.mode
+    if forceFull and mode ~= S.MODE_FULL then
+        result = callProducer(nil, true)
+        if result.state ~= S.STATE_READY or result.mode ~= S.MODE_FULL then
+            self:_scopedSendControl(connection, modId, sub, S.STATE_ERROR, S.REASON_PRODUCER_ERROR)
+            sub.lastControl = { state = S.STATE_ERROR, reason = S.REASON_PRODUCER_ERROR }
+            sub.previous = nil
+            sub.needsEpoch = true
+            sub.forceFull = false
+            return
+        end
+        mode = S.MODE_FULL
+    end
+    -- Decide epoch reset and the mode we can actually send.
+    local needReset = sub.previous == nil or sub.needsEpoch == true or sub.previous.viewKey ~= result.viewKey
     if needReset then
         if mode ~= S.MODE_FULL then
-            result = self:_scopedCallProducer(schema, context, nil, true)
+            result = callProducer(nil, true)
             if result.state ~= S.STATE_READY or result.mode ~= S.MODE_FULL then
                 self:_scopedSendControl(connection, modId, sub, S.STATE_ERROR, S.REASON_PRODUCER_ERROR)
                 sub.lastControl = { state = S.STATE_ERROR, reason = S.REASON_PRODUCER_ERROR }
@@ -634,7 +705,7 @@ function NetworkSync:_scopedPublishTo(connection, modId, sub)
             return   -- nothing on the wire
         end
         -- A revision change cannot be "unchanged": rebuild FULL.
-        result = self:_scopedCallProducer(schema, context, nil, true)
+        result = callProducer(nil, true)
         if result.state ~= S.STATE_READY or result.mode ~= S.MODE_FULL then
             self:_scopedSendControl(connection, modId, sub, S.STATE_ERROR, S.REASON_PRODUCER_ERROR)
             sub.lastControl = { state = S.STATE_ERROR, reason = S.REASON_PRODUCER_ERROR }
@@ -646,7 +717,7 @@ function NetworkSync:_scopedPublishTo(connection, modId, sub)
         mode = S.MODE_FULL
     elseif mode == S.MODE_DELTA then
         if result.baseRevision ~= sub.previous.dataRevision then
-            result = self:_scopedCallProducer(schema, context, nil, true)
+            result = callProducer(nil, true)
             if result.state ~= S.STATE_READY or result.mode ~= S.MODE_FULL then
                 self:_scopedSendControl(connection, modId, sub, S.STATE_ERROR, S.REASON_PRODUCER_ERROR)
                 sub.lastControl = { state = S.STATE_ERROR, reason = S.REASON_PRODUCER_ERROR }
@@ -789,6 +860,8 @@ local function newClientState()
         attempts = 0,
         timer = 0,
         waitTimer = nil,         -- after an unacknowledged burst
+        recoveries = 0,          -- consecutive bounded recoveries since the last APPLIED
+        lastDropped = nil,       -- diagnostic only: why the last frame was dropped
     }
 end
 
@@ -924,6 +997,7 @@ function NetworkSync:_scopedClientUpdate(dt)
         elseif cs.waitTimer ~= nil then
             cs.waitTimer = cs.waitTimer + dt
             if cs.waitTimer >= NetworkSync.DRIFT_FLOOR_MS and currentServerConnection() ~= nil then
+                cs.recoveries = 0
                 self:_scopedStartGeneration(modId)
             end
         end
@@ -938,10 +1012,25 @@ function NetworkSync:_scopedClientUpdate(dt)
     end
 end
 
---- Bounded recovery: clear usable state and start a fresh generation.
+--- Bounded recovery: clear usable state and start a fresh generation. The
+--- budget is JOIN_REQUEST_MAX consecutive recoveries per module; once spent
+--- (a consumer that keeps answering RETRYABLE, a repeating malformed or
+--- base-mismatch frame) the module stays unavailable with that reason and
+--- waits for the drift floor before one fresh generation with a new budget.
 function NetworkSync:_scopedRecover(modId, cs, reason)
     self:_scopedClientClear(modId, reason, true)
     cs.acknowledged = false
+    cs.recoveries = (cs.recoveries or 0) + 1
+    if cs.recoveries >= NetworkSync.JOIN_REQUEST_MAX then
+        cs.burstActive = false
+        cs.waitTimer = 0
+        cs.staging = nil
+        cs.state = S.STATE_UNAVAILABLE
+        cs.reason = reason
+        NSLogger.warning("scoped '%s': recovery budget spent after %d consecutive recoveries (last %s); waiting for the drift floor",
+            modId, cs.recoveries, tostring(reason))
+        return
+    end
     self:_scopedStartGeneration(modId)
 end
 
@@ -956,6 +1045,16 @@ function NetworkSync:_scopedTerminal(modId, cs, reason)
     cs.acknowledged = true
     self:_scopedSendUnsubscribe(modId, cs)
 end
+
+--- A count token on the wire is a canonical non-negative decimal ("0" or
+--- digits without a leading zero, at most 9 digits): tonumber alone accepts
+--- hex, surrounding blanks and fractions.
+local function parseCount(s)
+    if type(s) ~= "string" or #s > 9 then return nil end
+    if s ~= "0" and not isCanonicalDecimal(s) then return nil end
+    return tonumber(s)
+end
+S.parseCount = parseCount
 
 local function validateApplyResult(result, dataRevision)
     if type(result) ~= "table" then return S.OUTCOME_RETRYABLE, S.REASON_APPLY_ERROR end
@@ -999,6 +1098,7 @@ function NetworkSync:_scopedApply(modId, cs, staging, values)
         cs.usable = { viewEpoch = staging.viewEpoch, dataRevision = staging.dataRevision }
         cs.state = S.STATE_READY
         cs.reason = nil
+        cs.recoveries = 0
         cs.acknowledged = true
         cs.burstActive = false
         cs.waitTimer = nil
@@ -1025,7 +1125,7 @@ function NetworkSync:_scopedOnPublication(event)
     end
     local serverSession, viewEpoch, publicationId, state, mode = t[1], t[2], t[3], t[4], t[5]
     local baseRevision, dataRevision = t[6], t[7]
-    local chunkIndex, chunkCount, valueCount = tonumber(t[8]), tonumber(t[9]), tonumber(t[10])
+    local chunkIndex, chunkCount, valueCount = parseCount(t[8]), parseCount(t[9]), parseCount(t[10])
     if not isCanonicalDecimal(serverSession) or not isCanonicalDecimal(viewEpoch) or not isCanonicalDecimal(publicationId)
         or state ~= S.STATE_READY or not VALID_MODES[mode] or mode == S.MODE_UNCHANGED
         or type(dataRevision) ~= "string" or dataRevision == ""
@@ -1136,6 +1236,9 @@ function NetworkSync:_scopedOnControl(event)
         return
     end
     if cs.epochFloor ~= nil and compareDecimal(viewEpoch, cs.epochFloor) < 0 then return end
+    -- Every CONTROL carries a fresh publicationId; one at or below the floor
+    -- is older than a publication already applied and is dropped.
+    if cs.publicationFloor ~= nil and compareDecimal(publicationId, cs.publicationFloor) <= 0 then return end
 
     if reason == S.REASON_MODULE_NOT_REGISTERED or reason == S.REASON_MODULE_UNREGISTERED then
         -- No admitted subscriber. Clear, and coalesce a fresh burst after the
@@ -1171,9 +1274,11 @@ end
 function NetworkSync:_receiveScopedEvent(event, connection)
     self:_ensureScopedState()
     if event.malformed ~= nil then
+        -- Diagnostic only: a malformed envelope never changes the module's
+        -- state or its reason (a READY replica stays READY).
         if not self:_isServer() and self.scopedClient[event.modId or ""] ~= nil then
             local cs = self.scopedClient[event.modId]
-            cs.reason = S.REASON_MALFORMED
+            cs.lastDropped = S.REASON_MALFORMED
         end
         NSLogger.debug("scoped event dropped: %s", tostring(event.malformed))
         return
@@ -1220,9 +1325,9 @@ function NetworkSync:getScopedStatusLines()
             table.insert(lines, string.format("  - scoped %s: %d subscriber(s)", modId, n))
         else
             local cs = self.scopedClient[modId]
-            table.insert(lines, string.format("  - scoped %s: state=%s reason=%s sub=%s terminal=%s",
+            table.insert(lines, string.format("  - scoped %s: state=%s reason=%s sub=%s terminal=%s recoveries=%s dropped=%s",
                 modId, cs and cs.state or "n/a", tostring(cs and cs.reason), tostring(cs and cs.subscriptionId),
-                tostring(cs and cs.terminal)))
+                tostring(cs and cs.terminal), tostring(cs and cs.recoveries), tostring(cs and cs.lastDropped)))
         end
     end
     return lines

@@ -10,9 +10,11 @@
 --   FSBaseMission.update             -> drive the 1Hz batch / join retry
 --   FSBaseMission.delete             -> drop the handle
 --
--- Load order: NetworkSync is mod 2 (after StateLedger). The handle is
--- published as soon as this file runs so companions loading after it can
--- registerModule during their own module load.
+-- Load order: NetworkSync is the ecosystem's network bedrock and loads
+-- before the companions that register with it. StateLedger is NOT required
+-- (no modDesc dependency since NS-7); when both are installed either order
+-- works. The handle is published as soon as this file runs so companions
+-- loading after it can registerModule during their own module load.
 -- =========================================================
 
 -- Hot-reload latch (FuelCosts reference): g_currentModDirectory and
@@ -49,28 +51,35 @@ getfenv(0)["g_networkSync"] = networkSync
 -- retires as a no-op so another owner's chain is never cut.
 local connectionClosedWrapper = nil
 local connectionClosedOriginal = nil
-local connectionClosedRetired = false
+local connectionClosedRetire = nil
 
 local function installConnectionClosedWrapper(mission)
     if mission == nil or type(mission.onConnectionClosed) ~= "function" then return end
-    connectionClosedOriginal = mission.onConnectionClosed
-    connectionClosedRetired = false
-    connectionClosedWrapper = function(self, connection, disconnectReason)
-        if not connectionClosedRetired and g_networkSync ~= nil and g_networkSync._scopedOnConnectionClosed ~= nil then
+    -- The original and the retired flag are upvalues of THIS wrapper, so a
+    -- wrapper another owner chained over keeps calling its original after we
+    -- retire it; the module-level slots only identify the current install.
+    local original = mission.onConnectionClosed
+    local retired = false
+    local wrapper = function(self, connection, disconnectReason)
+        if not retired and g_networkSync ~= nil and g_networkSync._scopedOnConnectionClosed ~= nil then
             g_networkSync:_scopedOnConnectionClosed(connection)
         end
-        return connectionClosedOriginal(self, connection, disconnectReason)
+        return original(self, connection, disconnectReason)
     end
-    mission.onConnectionClosed = connectionClosedWrapper
+    connectionClosedWrapper = wrapper
+    connectionClosedOriginal = original
+    connectionClosedRetire = function() retired = true end
+    mission.onConnectionClosed = wrapper
 end
 
 local function removeConnectionClosedWrapper(mission)
-    connectionClosedRetired = true
+    if connectionClosedRetire ~= nil then connectionClosedRetire() end
     if mission ~= nil and connectionClosedWrapper ~= nil and mission.onConnectionClosed == connectionClosedWrapper then
         mission.onConnectionClosed = connectionClosedOriginal
     end
     connectionClosedWrapper = nil
     connectionClosedOriginal = nil
+    connectionClosedRetire = nil
 end
 
 local function onMissionLoad(mission)

@@ -543,9 +543,7 @@ function NetworkSync:update(dt)
         if self._scopedClientUpdate ~= nil then self:_scopedClientUpdate(dt) end
     end
 
-    if g_currentMission:getIsServer() then
-        -- server cadence handled above
-    elseif self.needsFullSync then
+    if not g_currentMission:getIsServer() and self.needsFullSync then
         -- THE HANDSHAKE ENDS WHEN THE SERVER ANSWERS, NOT WHEN WE ASK.
         --
         -- The old loop latched `fullSyncAsked` on its own send returning true, and

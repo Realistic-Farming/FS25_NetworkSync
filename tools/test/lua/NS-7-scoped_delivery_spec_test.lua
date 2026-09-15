@@ -310,7 +310,13 @@ end
 do
     local ns = NetworkSync.new()
     T.eq("C1 capability before mission: not ready", ns:getScopedCapabilities().ready, false)
-    T.eq("C2 capability reason", ns:getScopedCapabilities().reasonCode, "NOT_INITIALIZED")
+    T.eq("C2 capability reason with a mission still loading is WAITING-class", ns:getScopedCapabilities().reasonCode, "WAITING_MISSION_LOAD")
+    T.eq("C2b waiting flag", ns:getScopedCapabilities().waiting, true)
+    local savedMission = g_currentMission
+    g_currentMission = nil
+    T.eq("C2c no mission at all: NOT_INITIALIZED", ns:getScopedCapabilities().reasonCode, "NOT_INITIALIZED")
+    T.eq("C2d no mission: not waiting", ns:getScopedCapabilities().waiting, false)
+    g_currentMission = savedMission
     g_currentMission._isServer = true
     ns:onMissionLoaded()
     local caps = ns:getScopedCapabilities()
@@ -691,6 +697,7 @@ do
     g_currentMission._isServer = false
     client:unregisterScopedModule("stock")
     T.eq("L11 client unregister told the consumer", cleared[#cleared], "MODULE_UNREGISTERED")
+    T.eq("L11b client unregister sent UNSUBSCRIBE to the server", drain(toServer.sent)[1] and true, true)
 
     -- Mission end clears everything and readiness.
     local s2, c2 = newPair("stock", function() return { state = "WAITING", reason = "x" } end,
@@ -752,4 +759,250 @@ do
     client:_scopedStartGeneration("stock")
     deliver(conn.sent[1], client, false, toServer)
     T.eq("N4 a publication for a foreign subscription id is dropped", applied, 0)
+end
+
+
+-- =====================================================================
+-- PART 3: Bob's cold review of PR #7 (2026-09-15), fixed on the branch
+-- =====================================================================
+
+-- (O) BLOCKER: every producer call gets a fresh detached context.
+do
+    local calls = {}
+    local key = "farm-2"
+    local server, client = newPair("stock",
+        function(context, previous, forceFull)
+            calls[#calls + 1] = { hasConnection = context.connection ~= nil, previous = previous, forceFull = forceFull }
+            context.mutated = true
+            if context.connection == nil then return { state = "ERROR", reason = "NO_CONNECTION" } end
+            if previous ~= nil then
+                -- ignores forceFull on purpose: answers DELTA against the old key
+                return { state = "READY", viewKey = key, dataRevision = "R2", mode = "DELTA", baseRevision = "R1", values = {} }
+            end
+            return { state = "READY", viewKey = key, dataRevision = "R2", mode = "FULL", values = {} }
+        end,
+        { applyView = function(pub) return { outcome = "APPLIED", dataRevision = pub.dataRevision } end, clearView = function() end })
+    local conn = newConnection(120)
+    setActor(conn, 2, MakeUser(121, false))
+    clientTick(client); relayToServer(server, conn)
+    local first = conn.sent[1]
+    relayToClient(client, conn)
+    T.eq("O1 first publication FULL", first and first.tokens[5], "FULL")
+    -- View key changes: needReset forces a rebuild; the re-call must still see a connection.
+    key = "farm-2|contract"
+    serverTick(server)
+    local last = conn.sent[#conn.sent]
+    T.eq("O2 re-call produced a FULL, not ERROR", last and last.tokens[4], "READY")
+    T.eq("O3 re-call mode FULL", last and last.tokens[5], "FULL")
+    T.eq("O4 three producer calls so far (subscribe, delta attempt, forced rebuild)", #calls, 3)
+    for i, c in ipairs(calls) do T.eq("O5 call " .. i .. " saw a connection", c.hasConnection, true) end
+    T.eq("O6 forced rebuild had no previous", calls[3].previous, nil)
+    T.eq("O7 forced rebuild was told forceFull", calls[3].forceFull, true)
+end
+
+-- (P) MAJOR 2: forceFull is enforced.
+do
+    local honours = false
+    local n = 0
+    local server = NetworkSync.new(); g_currentMission._isServer = true; server:onMissionLoaded()
+    server:registerScopedModule("stock", {
+        -- First call: FULL. Afterwards this producer answers UNCHANGED from its
+        -- own cache no matter what previous/forceFull say, until `honours`.
+        buildView = function(context, previous, forceFull)
+            n = n + 1
+            if n == 1 or (honours and forceFull) then
+                return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "FULL", values = {} }
+            end
+            return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "UNCHANGED" }
+        end, applyView = function() end, clearView = function() end })
+    local conn = newConnection(130)
+    setActor(conn, 2, MakeUser(131, false))
+    deliver(E.new(E.KIND_SUBSCRIBE, "stock", "9", 1, { "1", "1" }), server, true, conn)
+    T.eq("P1 subscribed with a FULL", conn.sent[1].tokens[5], "FULL")
+    drain(conn.sent)
+    serverTick(server)
+    T.eq("P2 unchanged at the same revision sends nothing when not forced", #conn.sent, 0)
+    -- syncNow forces FULL; this producer ignores forceFull and answers UNCHANGED twice.
+    server:syncNow("stock")
+    T.eq("P3 a producer that ignores forceFull yields ERROR, not silence", conn.sent[1] and conn.sent[1].tokens[4], "ERROR")
+    T.eq("P4 with PRODUCER_ERROR", conn.sent[1].tokens[5], "PRODUCER_ERROR")
+    drain(conn.sent)
+    -- A producer that honours forceFull on the forced re-call sends FULL.
+    honours = true
+    serverTick(server)
+    T.eq("P5 next cadence rebuilds FULL (previous was invalidated)", conn.sent[1] and conn.sent[1].tokens[5], "FULL")
+    drain(conn.sent)
+    server:syncNow("stock")
+    T.eq("P6 forced FULL when the producer honours forceFull", conn.sent[1] and conn.sent[1].tokens[5], "FULL")
+end
+
+-- (Q) MAJOR 3: PLAYER_FARM_CHANGED only acts for the local player or an actual local farm change.
+do
+    local subs = {}
+    g_messageCenter = { subscribe = function(_, mt, cb, target) subs[#subs + 1] = { mt = mt, cb = cb, target = target } end, unsubscribeAll = function() end }
+    local localFarm = 2
+    local savedGetFarmId = g_currentMission.getFarmId
+    g_currentMission.getFarmId = function(_, conn) if conn == nil then return localFarm end return FARMS[conn] end
+    local cleared = {}
+    local client = NetworkSync.new(); g_currentMission._isServer = false; client:onMissionLoaded()
+    client:registerScopedModule("stock", { buildView = function() end, applyView = function() end, clearView = function(r) cleared[#cleared + 1] = r end })
+    client:_scopedStartGeneration("stock")
+    local cs = client.scopedClient["stock"]
+    cs.state = "READY"; cs.usable = { viewEpoch = "1", dataRevision = "R1" }
+    local firstId = cs.subscriptionId
+    T.eq("Q1 subscribed to PLAYER_FARM_CHANGED", subs[#subs] and subs[#subs].mt, MessageType.PLAYER_FARM_CHANGED)
+    local handler, target = subs[#subs].cb, subs[#subs].target
+    g_localPlayer = { name = "me" }
+    handler(target, { name = "someone-else" })
+    T.eq("Q2 another player's switch leaves the replica", cs.state, "READY")
+    T.eq("Q3 no clear for another player's switch", #cleared, 0)
+    T.eq("Q4 same generation", cs.subscriptionId, firstId)
+    handler(target, g_localPlayer)
+    T.eq("Q5 the local player's switch clears the view", cleared[#cleared], "LOCAL_CONTEXT_CHANGED")
+    T.ok("Q6 and starts a new generation", client.scopedClient["stock"].subscriptionId ~= firstId)
+    local secondId = client.scopedClient["stock"].subscriptionId
+    -- A farm-id change without the player object is still a local change.
+    localFarm = 3
+    handler(target, { name = "someone-else" })
+    T.ok("Q7 an actual local farm change re-subscribes even for a foreign publish", client.scopedClient["stock"].subscriptionId ~= secondId)
+    local thirdId = client.scopedClient["stock"].subscriptionId
+    handler(target, nil)
+    T.eq("Q8 nothing changed: no new generation", client.scopedClient["stock"].subscriptionId, thirdId)
+    g_localPlayer = nil
+    g_currentMission.getFarmId = savedGetFarmId
+    g_messageCenter = { subscribe = function() end, unsubscribeAll = function() end }
+end
+
+-- (R) MAJOR 4: the recovery budget.
+do
+    local cleared = {}
+    local server, client = newPair("stock",
+        function() return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "FULL", values = {} } end,
+        { applyView = function() return { outcome = "RETRYABLE", reason = "APPLY_ERROR" } end, clearView = function(r) cleared[#cleared + 1] = r end })
+    local conn = newConnection(140)
+    setActor(conn, 2, MakeUser(141, false))
+    local ids = {}
+    for i = 1, NetworkSync.JOIN_REQUEST_MAX do
+        clientTick(client); relayToServer(server, conn); relayToClient(client, conn)
+        ids[#ids + 1] = client.scopedClient["stock"].subscriptionId
+    end
+    local cs = client.scopedClient["stock"]
+    T.eq("R1 five recoveries counted", cs.recoveries, NetworkSync.JOIN_REQUEST_MAX)
+    T.eq("R2 budget spent: burst stopped", cs.burstActive, false)
+    T.eq("R3 budget spent: waiting for the drift floor", cs.waitTimer, 0)
+    T.eq("R4 state UNAVAILABLE", cs.state, "UNAVAILABLE")
+    T.eq("R5 last reason retained", cs.reason, "APPLY_ERROR")
+    clientTick(client); clientTick(client)
+    T.eq("R6 no SUBSCRIBE while the budget is spent", #toServer.sent, 0)
+    clientTick(client, NetworkSync.DRIFT_FLOOR_MS)
+    T.eq("R7 drift floor: fresh budget", client.scopedClient["stock"].recoveries, 0)
+    clientTick(client)
+    T.eq("R8 one fresh generation after the drift floor", #drain(toServer.sent), 1)
+    -- A successful apply resets the count.
+    local okServer, okClient = newPair("stock",
+        function() return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "FULL", values = {} } end,
+        { applyView = function(pub) return { outcome = "APPLIED", dataRevision = pub.dataRevision } end, clearView = function() end })
+    local conn2 = newConnection(142)
+    setActor(conn2, 2, MakeUser(143, false))
+    okClient:_scopedStartGeneration("stock")
+    okClient.scopedClient["stock"].recoveries = 3
+    clientTick(okClient); relayToServer(okServer, conn2); relayToClient(okClient, conn2)
+    T.eq("R9 APPLIED resets the recovery count", okClient.scopedClient["stock"].recoveries, 0)
+end
+
+-- (S) MAJOR 5: client unregister tells the server.
+do
+    local server, client = newPair("stock",
+        function() return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "FULL", values = {} } end,
+        { applyView = function(pub) return { outcome = "APPLIED", dataRevision = pub.dataRevision } end, clearView = function() end })
+    local conn = newConnection(150)
+    setActor(conn, 2, MakeUser(151, false))
+    clientTick(client); relayToServer(server, conn); relayToClient(client, conn)
+    T.ok("S1 server holds the subscription", server.scopedSubscriptions[conn]["stock"] ~= nil)
+    drain(toServer.sent)
+    g_currentMission._isServer = false
+    client:unregisterScopedModule("stock")
+    local sent = drain(toServer.sent)
+    T.eq("S2 one UNSUBSCRIBE sent", #sent, 1)
+    T.eq("S3 kind UNSUBSCRIBE", sent[1].kind, E.KIND_UNSUBSCRIBE)
+    for _, e in ipairs(sent) do deliver(e, server, true, conn) end
+    T.eq("S4 server subscription gone", server.scopedSubscriptions[conn]["stock"], nil)
+    drain(conn.sent)
+    serverTick(server)
+    T.eq("S5 nothing more is built or sent for it", #conn.sent, 0)
+end
+
+-- (T) MINOR 8: count tokens must be canonical decimals.
+do
+    T.eq("T1 zero parses", S.parseCount("0"), 0)
+    T.eq("T2 plain decimal parses", S.parseCount("12"), 12)
+    T.eq("T3 hex refused", S.parseCount("0x10"), nil)
+    T.eq("T4 leading blank refused", S.parseCount(" 1"), nil)
+    T.eq("T5 fraction refused", S.parseCount("1.5"), nil)
+    T.eq("T6 leading zero refused", S.parseCount("01"), nil)
+    T.eq("T7 sign refused", S.parseCount("-1"), nil)
+    local cleared = {}
+    local client = NetworkSync.new(); g_currentMission._isServer = false; client:onMissionLoaded()
+    client:registerScopedModule("stock", { buildView = function() end, applyView = function() return { outcome = "APPLIED", dataRevision = "R1" } end, clearView = function(r) cleared[#cleared + 1] = r end })
+    client:_scopedStartGeneration("stock")
+    local id = client.scopedClient["stock"].subscriptionId
+    deliver(E.new(E.KIND_PUBLICATION, "stock", id, 1, { "1", "1", "1", "READY", "FULL", "", "R1", "0x0", "1", "0" }), client, false, toServer)
+    T.eq("T8 a hex chunk index is MALFORMED", cleared[#cleared], "MALFORMED")
+end
+
+-- (U) MINOR 9: a malformed envelope is a diagnostic, never a state change.
+do
+    local client = NetworkSync.new(); g_currentMission._isServer = false; client:onMissionLoaded()
+    client:registerScopedModule("stock", { buildView = function() end, applyView = function() end, clearView = function() end })
+    client:_scopedStartGeneration("stock")
+    local cs = client.scopedClient["stock"]
+    cs.state = "READY"; cs.reason = nil
+    g_networkSync = client
+    client:_receiveScopedEvent({ malformed = "UNKNOWN_BOOTSTRAP", modId = "stock" }, nil)
+    T.eq("U1 state untouched", cs.state, "READY")
+    T.eq("U2 reason untouched", cs.reason, nil)
+    T.eq("U3 diagnostic recorded", cs.lastDropped, "MALFORMED")
+end
+
+-- (V) MINOR 10: CONTROL below the publication floor is dropped.
+do
+    local cleared = {}
+    local server, client = newPair("stock",
+        function() return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "FULL", values = {} } end,
+        { applyView = function(pub) return { outcome = "APPLIED", dataRevision = pub.dataRevision } end, clearView = function(r) cleared[#cleared + 1] = r end })
+    local conn = newConnection(160)
+    setActor(conn, 2, MakeUser(161, false))
+    clientTick(client); relayToServer(server, conn); relayToClient(client, conn)
+    local cs = client.scopedClient["stock"]
+    T.eq("V1 READY after the FULL", cs.state, "READY")
+    local floor = cs.publicationFloor
+    T.ok("V2 floor is the applied publication", S.isCanonicalDecimal(floor))
+    local clearsBefore = #cleared
+    deliver(E.new(E.KIND_CONTROL, "stock", cs.subscriptionId, 1, { cs.serverSession, cs.viewEpoch, floor, "UNAVAILABLE", "STALE" }), client, false, toServer)
+    T.eq("V3 CONTROL at the floor is dropped", cs.state, "READY")
+    T.eq("V4 consumer not cleared", #cleared, clearsBefore)
+    deliver(E.new(E.KIND_CONTROL, "stock", cs.subscriptionId, 1, { cs.serverSession, cs.viewEpoch, S.incrementDecimal(floor), "UNAVAILABLE", "LATER" }), client, false, toServer)
+    T.eq("V5 a newer CONTROL is applied", cs.state, "UNAVAILABLE")
+    T.eq("V6 with its reason", cs.reason, "LATER")
+end
+
+-- (W) MINOR 11: the user is bound at the first resolve; a later change is refused with CONTROL.
+do
+    local server = NetworkSync.new(); g_currentMission._isServer = true; server:onMissionLoaded()
+    server:registerScopedModule("stock", { buildView = function() return { state = "READY", viewKey = "k", dataRevision = "R1", mode = "FULL", values = {} } end, applyView = function() end, clearView = function() end })
+    local conn = newConnection(170)
+    setActor(conn, 2, nil)   -- no user record yet
+    deliver(E.new(E.KIND_SUBSCRIBE, "stock", "3", 1, { "1", "1" }), server, true, conn)
+    local sub = server.scopedSubscriptions[conn]["stock"]
+    T.eq("W1 no user at SUBSCRIBE: unbound", sub.userId, nil)
+    drain(conn.sent)
+    setActor(conn, 2, MakeUser(171, false))
+    serverTick(server)
+    T.eq("W2 bound at the first resolve", sub.userId, 171)
+    drain(conn.sent)
+    setActor(conn, 2, MakeUser(172, false))
+    serverTick(server)
+    T.eq("W3 user change: CONTROL UNAVAILABLE", conn.sent[1] and conn.sent[1].tokens[4], "UNAVAILABLE")
+    T.eq("W4 reason USER_CHANGED", conn.sent[1].tokens[5], "USER_CHANGED")
+    T.eq("W5 subscription dropped", server.scopedSubscriptions[conn]["stock"], nil)
 end
