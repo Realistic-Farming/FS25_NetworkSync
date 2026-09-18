@@ -3,7 +3,7 @@
 **Version:** 2.0.0.0
 **Author:** TisonK
 
-The multiplayer network bedrock of the Realistic Farming mod ecosystem. NetworkSync is mod 2 in the load order (after StateLedger). It replaces each companion mod's own network event classes with one batched sync cycle: companions register a schema and call `markDirty`, and NetworkSync serializes, batches at 1Hz, and delivers. This cuts multiplayer traffic and stops the cross-mod rubber-banding that comes from many mods each syncing on their own timer.
+The multiplayer network bedrock of the Realistic Farming mod ecosystem. NetworkSync is the network bedrock of the ecosystem and loads before the companion mods that register with it; StateLedger is not required (there is no dependency on it). It replaces each companion mod's own network event classes with one batched sync cycle: companions register a schema and call `markDirty`, and NetworkSync serializes, batches at 1Hz, and delivers. This cuts multiplayer traffic and stops the cross-mod rubber-banding that comes from many mods each syncing on their own timer.
 
 There are no settings and nothing to configure. Install it, keep it loaded, and let the companion mods use it.
 
