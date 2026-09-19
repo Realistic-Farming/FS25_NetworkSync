@@ -14,7 +14,7 @@ local function deliver(event, clientNS)
   g_currentMission._isServer = false
   local rx = RealisticFarmingSyncEvent.emptyNew()
   -- run() -> clientNS:receiveFrames
-  StreamAudit.deliver(s, "networksync_v2 clientReceive", function() rx:readStream(s, nil) end)
+  StreamAudit.deliver(s, "networksync_v2 clientReceive", function() rx:readStream(s, nil) end, true)
 end
 
 -- Run a server-side send, capturing every broadcast event.

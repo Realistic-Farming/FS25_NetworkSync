@@ -38,6 +38,14 @@ MUTATIONS = [
     "    local n = streamReadInt32(streamId); streamReadInt32(streamId)", 1)],
   "the reader consumes one field more than the writer wrote: underflow at the end of the frame"),
 
+ ("M5-short-read-leaves-residue", SCOPED,
+  # The OTHER half of count. StreamClean cannot see this: reading SHORT of the end
+  # leaves r < w with zero underflows and zero type errors. The engine checks exactly
+  # this at network/Server.lua:443-444 and reports "Not all bits read in event".
+  [("    self.protocolVersion = streamReadInt32(streamId)\n    local n = streamReadInt32(streamId)",
+    "    self.protocolVersion = streamReadInt32(streamId)\n    local n = 0", 1)],
+  "the reader stops one field short, leaving bytes on the wire that the engine would reject"),
+
  ("M4-order-swap-on-the-write-side", SYNC,
   [("    streamWriteInt32(streamId, #self.frames)",
     "    streamWriteString(streamId, tostring(#self.frames))", 1)],

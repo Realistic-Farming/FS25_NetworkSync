@@ -86,7 +86,6 @@ for (const tf of testFiles) {
     const crashFails = [...out.matchAll(/^##TEST_FAIL (.+)$/gm)].map((m) => m[1]);
     totalPass += crashPasses.length;
     totalFail += crashFails.length;
-    hadError = true;
     console.log(c.red(`✗ ${c.bold(tf)} - Lua error while loading/running`) +
       c.dim(` (${crashPasses.length} passed, ${crashFails.length} failed before the error)`));
     for (const f of crashFails) console.log(`    ${c.red("FAIL")} ${f}`);

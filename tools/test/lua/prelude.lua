@@ -67,10 +67,28 @@ local function _r(s, tag)
   return s.cells[s.r]
 end
 
---- True when the stream drained cleanly: every read matched its write's type and
---- nothing was read past the end. Use it on both sides of a round trip.
+--- True when every read matched its write's type and nothing was read PAST the end.
+---
+--- Note what this does NOT cover: reading SHORT of the end. Eight cells written
+--- against seven read leaves residue on the wire, and that is clean by both counters
+--- here. Use StreamDrained for the other direction.
 function StreamClean(s)
   return s ~= nil and s.typeErrors == 0 and s.underflows == 0
+end
+
+--- True when the reader consumed everything the writer wrote.
+---
+--- This is the other half of "count", and the engine checks exactly it: after an
+--- event's readStream, network/Server.lua:443-444 compares the read offset against
+--- the declared length and reports "Not all bits read in event". So a short read is a
+--- real fault class with a real in-game symptom, not a tidiness point.
+---
+--- It is OPT-IN rather than folded into StreamClean, because under-reading is
+--- sometimes correct: a frame whose leading byte is an unknown bootstrap is consumed
+--- as malformed and deliberately not decoded further, and a blanket residue assertion
+--- would fail the one test that gets that right.
+function StreamDrained(s)
+  return s ~= nil and s.r == s.w
 end
 
 --- Round-trip audit. Every round-trip helper in the suite hands its stream here, so
@@ -80,7 +98,7 @@ end
 --- The trip COUNT is recorded as well as the faults, and both are asserted. A bare
 --- "zero faults" row is satisfied by a run where no round trip happened at all, which
 --- is the same shape as a refusal row passing because the fixture never ran.
-StreamAudit = { trips = 0, faults = 0, firstFault = nil }
+StreamAudit = { trips = 0, faults = 0, raises = 0, firstFault = nil }
 
 --- A dirty trip fails IMMEDIATELY, at the point of detection, as well as being
 --- recorded for the end-of-file rows.
@@ -91,14 +109,23 @@ StreamAudit = { trips = 0, faults = 0, firstFault = nil }
 --- The mutation still dies, but it dies as "Lua error while loading/running" with no
 --- named row, which hides which trip was at fault and takes every later row with it.
 --- Failing here means the diagnosis is already printed when the crash arrives.
-function StreamAudit.check(s, label)
+function StreamAudit.check(s, label, expectDrained)
   StreamAudit.trips = StreamAudit.trips + 1
   if not StreamClean(s) then
     StreamAudit.faults = StreamAudit.faults + 1
     local detail = string.format("%s: typeErrors=%d underflows=%d",
       tostring(label), s.typeErrors or -1, s.underflows or -1)
     if StreamAudit.firstFault == nil then StreamAudit.firstFault = detail end
-    T.ok("stream round trip drained clean: " .. tostring(label), false, detail)
+    T.ok("stream round trip typed clean: " .. tostring(label), false, detail)
+  end
+  -- Residue: the reader stopped short and left bytes on the wire. Opt-in, because a
+  -- deliberately-unconsumed frame is a correct outcome in some tests.
+  if expectDrained and not StreamDrained(s) then
+    StreamAudit.faults = StreamAudit.faults + 1
+    local detail = string.format("%s: wrote %d cells, read %d, %d left on the wire",
+      tostring(label), s.w or -1, s.r or -1, (s.w or 0) - (s.r or 0))
+    if StreamAudit.firstFault == nil then StreamAudit.firstFault = detail end
+    T.ok("stream round trip fully drained: " .. tostring(label), false, detail)
   end
   return s
 end
@@ -113,10 +140,11 @@ end
 --- then reported as its own named row, so a crash keeps its evidence.
 ---
 --- A raise is still a failure here. This does not swallow anything.
-function StreamAudit.deliver(s, label, fn)
+function StreamAudit.deliver(s, label, fn, expectDrained)
   local ok, err = pcall(fn)
-  StreamAudit.check(s, label)
+  StreamAudit.check(s, label, expectDrained)
   if not ok then
+    StreamAudit.raises = StreamAudit.raises + 1
     T.ok("stream round trip completed without raising: " .. tostring(label), false,
       string.format("%s raised: %s (stream typeErrors=%s underflows=%s)",
         tostring(label), tostring(err), tostring(s.typeErrors), tostring(s.underflows)))
@@ -132,6 +160,15 @@ function StreamAudit.report()
   T.ok("and round trips were actually audited, so the row above is not vacuous",
     StreamAudit.trips > 0,
     "StreamAudit saw zero round trips; the clean result above proves nothing")
+  -- Guarding the read keeps the diagnosis, but it also means the file CONTINUES past
+  -- a raise that would previously have aborted it. Every row after that point ran
+  -- against half-applied state: a receiver part-way through applying, g_networkSync
+  -- and _isServer already set. A pass underneath a raise is not evidence, so the
+  -- green below one has to be labelled rather than counted silently.
+  T.ok("no round trip raised, so no later row ran against half-applied state",
+    StreamAudit.raises == 0,
+    string.format("%d round trip(s) raised; every row after the first is suspect",
+      StreamAudit.raises))
 end
 
 function streamWriteInt32(s, v)   _w(s, "i32", math.floor(v)) end

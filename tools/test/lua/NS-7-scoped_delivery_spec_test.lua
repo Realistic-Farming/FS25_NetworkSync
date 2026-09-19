@@ -201,7 +201,7 @@ local function deliver(event, receiverNS, asServer, connection)
     g_networkSync = receiverNS
     g_currentMission._isServer = asServer
     local rx = E.emptyNew()
-    StreamAudit.deliver(s, "NS-7 roundTrip", function() rx:readStream(s, connection) end)
+    StreamAudit.deliver(s, "NS-7 roundTrip", function() rx:readStream(s, connection) end, true)
 end
 local function drain(list) local out = {}; for i = 1, #list do out[i] = list[i] end; for i = #list, 1, -1 do list[i] = nil end; return out end
 local function kindsOf(events) local t = {}; for _, e in ipairs(events) do t[#t + 1] = e.kind end; return table.concat(t, ",") end
