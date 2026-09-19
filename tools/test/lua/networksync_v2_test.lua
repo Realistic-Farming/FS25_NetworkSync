@@ -13,7 +13,8 @@ local function deliver(event, clientNS)
   g_networkSync = clientNS
   g_currentMission._isServer = false
   local rx = RealisticFarmingSyncEvent.emptyNew()
-  rx:readStream(s, nil)   -- run() -> clientNS:receiveFrames
+  -- run() -> clientNS:receiveFrames
+  StreamAudit.deliver(s, "networksync_v2 clientReceive", function() rx:readStream(s, nil) end, true)
 end
 
 -- Run a server-side send, capturing every broadcast event.
@@ -167,3 +168,7 @@ do
   T.eq("compat: frame mode is FULL", events[1].frames[1].mode, NetworkSync.MODE_FULL)
   T.eq("compat: single chunk", events[1].frames[1].chunkCount, 1)
 end
+
+-- Every round trip above handed its stream to StreamAudit; these two rows are
+-- where that becomes evidence rather than a counter nobody reads.
+StreamAudit.report()

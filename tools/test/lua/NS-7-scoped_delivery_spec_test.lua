@@ -201,7 +201,7 @@ local function deliver(event, receiverNS, asServer, connection)
     g_networkSync = receiverNS
     g_currentMission._isServer = asServer
     local rx = E.emptyNew()
-    rx:readStream(s, connection)
+    StreamAudit.deliver(s, "NS-7 roundTrip", function() rx:readStream(s, connection) end, true)
 end
 local function drain(list) local out = {}; for i = 1, #list do out[i] = list[i] end; for i = #list, 1, -1 do list[i] = nil end; return out end
 local function kindsOf(events) local t = {}; for _, e in ipairs(events) do t[#t + 1] = e.kind end; return table.concat(t, ",") end
@@ -1006,3 +1006,7 @@ do
     T.eq("W4 reason USER_CHANGED", conn.sent[1].tokens[5], "USER_CHANGED")
     T.eq("W5 subscription dropped", server.scopedSubscriptions[conn]["stock"], nil)
 end
+
+-- Every round trip above handed its stream to StreamAudit; these two rows are
+-- where that becomes evidence rather than a counter nobody reads.
+StreamAudit.report()
