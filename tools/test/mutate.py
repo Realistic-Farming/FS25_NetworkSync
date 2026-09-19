@@ -46,6 +46,24 @@ MUTATIONS = [
     "    self.protocolVersion = streamReadInt32(streamId)\n    local n = 0", 1)],
   "the reader stops one field short, leaving bytes on the wire that the engine would reject"),
 
+ ("M6-dropped-length-prefix-raises-inside-readStream", SCOPED,
+  # The one path the other five miss, and the only one that can exercise the raise
+  # row. Those five all crash DOWNSTREAM in the test file, which aborts it before any
+  # end-of-file row can run, so the raise row never fires and cannot be proven.
+  #
+  # Dropping the length prefix makes the writer emit token strings where the count
+  # belonged. The reader's streamReadInt32 pulls a cell tagged "str", counts a type
+  # error, and returns a string; `n < 0` at :127 then raises "attempt to compare
+  # string with number" INSIDE readStream, inside deliver's pcall. The raise is
+  # caught, the file continues, and report() can finally assert on raises.
+  #
+  # It is also a realistic defect rather than a contrived one: dropping a length
+  # prefix is an ordinary editing mistake. A mutation tuned until it dies proves
+  # nothing; one a developer could plausibly write proves something.
+  [("    local n = #self.tokens\n    streamWriteInt32(streamId, n)",
+    "    local n = #self.tokens", 1)],
+  "the length prefix is dropped, so the reader compares a string against a number inside readStream"),
+
  ("M4-order-swap-on-the-write-side", SYNC,
   [("    streamWriteInt32(streamId, #self.frames)",
     "    streamWriteString(streamId, tostring(#self.frames))", 1)],

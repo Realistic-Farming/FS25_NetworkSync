@@ -165,6 +165,14 @@ function StreamAudit.report()
   -- against half-applied state: a receiver part-way through applying, g_networkSync
   -- and _isServer already set. A pass underneath a raise is not evidence, so the
   -- green below one has to be labelled rather than counted silently.
+  --
+  -- SCOPE OF THIS ROW, because it is weaker than the per-trip one above it. The raise
+  -- row inside StreamAudit.deliver is a proven detector: mutation M6 drops a length
+  -- prefix, the reader compares a string against a number inside readStream, and that
+  -- row fires. THIS row is a summary of those, and no mutation in the battery reaches
+  -- it: in all six the file still aborts downstream before any end-of-file row runs.
+  -- It earns its place by labelling a run that survives a raise to completion, which
+  -- the battery has not yet produced. Treat it as a label, not as coverage.
   T.ok("no round trip raised, so no later row ran against half-applied state",
     StreamAudit.raises == 0,
     string.format("%d round trip(s) raised; every row after the first is suspect",
