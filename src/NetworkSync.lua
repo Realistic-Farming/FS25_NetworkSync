@@ -363,9 +363,12 @@ function NetworkSync:_warnKeyedArgs(actionId, args)
     local n = #args
     for k in pairs(args) do
         if type(k) ~= "number" or k < 1 or k > n or math.floor(k) ~= k then
+            -- Keyed on the id's string form: a nil id (a misspelled action constant) must
+            -- log, as the rest of requestAction does with it, never raise (Bob, #11).
+            local memo = tostring(actionId)
             self.keyedArgsWarned = self.keyedArgsWarned or {}
-            if not self.keyedArgsWarned[actionId] then
-                self.keyedArgsWarned[actionId] = true
+            if not self.keyedArgsWarned[memo] then
+                self.keyedArgsWarned[memo] = true
                 NSLogger.warning("requestAction('%s'): args carries the key '%s', which the wire does not carry (args[1..#args] only); a joined client's request arrives without it. Send a positional array.",
                     tostring(actionId), tostring(k))
             end

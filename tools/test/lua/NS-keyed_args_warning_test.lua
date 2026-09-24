@@ -72,6 +72,11 @@ group("H", function()
     ns:registerAction("mod_float", { adminOnly = false, onAction = function(_, args) applied[#applied + 1] = args end })
     ns:requestAction("mod_float", { [1.5] = 1 })
     T.eq("H5 a non-integer key counts as keyed and is warned once", warned("requestAction('mod_float'): args carries the key '1.5'"), 1)
+    -- A nil action id (a misspelled constant) with keyed args: the guard logs and
+    -- requestAction goes on to log "not registered" as it always did; nothing raises.
+    local okCall, ret = pcall(ns.requestAction, ns, nil, { farmId = 1 })
+    T.eq("H6 a nil action id with keyed args logs the keyed warning and the old not-registered line, returns as before, never raises",
+        tostring(okCall) .. "/" .. tostring(ret) .. "/" .. warned("requestAction('nil')") .. "/" .. warned("not registered"), "true/true/1/1")
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════
