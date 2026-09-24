@@ -96,9 +96,14 @@ RealisticFarmingSyncEvent.readValue  = readValue
 -- budget at no less than 16 estimated bytes each (estimateFrameBytes with a one-char
 -- module id and no values). A count outside that is a forged stream, refused the scoped
 -- event's way (NetworkSyncScopedEvent.lua:125-130): the event marks itself malformed,
--- reads no further and never runs. What that does to the rest of the sender's packet is
--- that sender's own loss: Server.lua:436-448 checks the bits read, prints an error and
--- returns from THAT packet only. The action writer has no chunker of its own, so its
+-- reads no further and never runs. Reading short costs nobody but the sender: the
+-- server's event branch handles one message per packet with no loop (Server.lua
+-- :413-448), and a sender puts each event on its own stream (netSendStream right after
+-- writeStream, Connection.lua:99), so the unread rest is that one packet's and no
+-- other. Note the engine's own bit check (Server.lua:438-446) runs only when the SENDER
+-- wrote the debug flag (read at :427; written as g_networkDebug with the size word only
+-- when set, Connection.lua:85-90): a forged stream writes false, so a refused event
+-- leaves no error line. The action writer has no chunker of its own, so its
 -- args take the same per-frame value ceiling (the fleet's largest sender passes three).
 RealisticFarmingSyncEvent.MAX_EVENT_FRAMES = 512    -- EVENT_BUDGET_BYTES 8192 / 16
 RealisticFarmingSyncEvent.MAX_FRAME_VALUES = 4096   -- EVENT_BUDGET_BYTES 8192 / 2
