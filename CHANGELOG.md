@@ -14,6 +14,7 @@ the repo's git history and README.
 ## [Unreleased]
 
 ### Fixed
+- **A forged sync or action stream can no longer hang a server.** Every count the shared transport reads (frames per event, values per frame, action arguments) is now held to what its own writer can produce, and a stream above that is refused without being read further; the state-sync event, which only a server sends, reads nothing at all when it arrives at a server. Nothing changes for a legitimate client; nothing on the wire changes.
 - **A mod that asks the server for an action with a keyed table is now warned once, in the log, on any machine.** The transport carries a positional array only, so such a request reached the server empty from a joined client while working for the host; the warning names the action and the key so the defect shows in singleplayer and host testing. Nothing is refused and nothing on the wire changes.
 
 ## [2.1.0.0] - 2026-09-18

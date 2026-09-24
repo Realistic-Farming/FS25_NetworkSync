@@ -87,6 +87,29 @@ end
 RealisticFarmingSyncEvent.writeValue = writeValue
 RealisticFarmingSyncEvent.readValue  = readValue
 
+-- READ BOUNDS (MAINTENANCE row 118). The server reads every registered event a client
+-- sends (network/Server.lua:436) BEFORE any guard in run, so a forged count in a
+-- readStream loop is a hang vector on any host, dedicated included. Each count is held
+-- to what the WRITER can produce, derived from the chunker in NetworkSync.lua: a frame's
+-- values are split to fit EVENT_BUDGET_BYTES at no less than 2 estimated bytes each
+-- (estimateValueBytes, a boolean), and an event's frames are batched to fit the same
+-- budget at no less than 16 estimated bytes each (estimateFrameBytes with a one-char
+-- module id and no values). A count outside that is a forged stream, refused the scoped
+-- event's way (NetworkSyncScopedEvent.lua:125-130): the event marks itself malformed,
+-- reads no further and never runs. What that does to the rest of the sender's packet is
+-- that sender's own loss: Server.lua:436-448 checks the bits read, prints an error and
+-- returns from THAT packet only. The action writer has no chunker of its own, so its
+-- args take the same per-frame value ceiling (the fleet's largest sender passes three).
+RealisticFarmingSyncEvent.MAX_EVENT_FRAMES = 512    -- EVENT_BUDGET_BYTES 8192 / 16
+RealisticFarmingSyncEvent.MAX_FRAME_VALUES = 4096   -- EVENT_BUDGET_BYTES 8192 / 2
+
+--- A count a writer could have written: a number from 0 to its bound (a nil is a
+--- short stream on the bench's typed mock; the engine's stream never returns one).
+local function countWithinBound(n, bound)
+    return type(n) == "number" and n >= 0 and n <= bound
+end
+RealisticFarmingSyncEvent.countWithinBound = countWithinBound
+
 function RealisticFarmingSyncEvent.emptyNew()
     return Event.new(RealisticFarmingSyncEvent_mt)
 end
@@ -116,13 +139,28 @@ end
 
 function RealisticFarmingSyncEvent:readStream(streamId, connection)
     self.frames = {}
+    -- Only a server sends sync frames, and the server never reads its own (broadcastEvent
+    -- skips the local stream). A sync event arriving at a server is a client's forgery:
+    -- read none of it (row 118; the early return in run at the end came after the reads).
+    if g_currentMission ~= nil and g_currentMission:getIsServer() then
+        self.malformed = "WRONG_SIDE"
+        return
+    end
     local count = streamReadInt32(streamId)
+    if not countWithinBound(count, RealisticFarmingSyncEvent.MAX_EVENT_FRAMES) then
+        self.malformed = "FRAME_COUNT_OUT_OF_RANGE"
+        return
+    end
     for _ = 1, count do
         local modId      = streamReadString(streamId)
         local chunkIndex = streamReadInt32(streamId)
         local chunkCount = streamReadInt32(streamId)
         local mode       = streamReadUInt8(streamId)
         local n          = streamReadInt32(streamId)
+        if not countWithinBound(n, RealisticFarmingSyncEvent.MAX_FRAME_VALUES) then
+            self.malformed = "VALUE_COUNT_OUT_OF_RANGE"
+            return
+        end
         local values = {}
         for i = 1, n do
             values[i] = readValue(streamId)
@@ -215,10 +253,17 @@ function RealisticFarmingActionEvent:writeStream(streamId, connection)
     end
 end
 
+RealisticFarmingActionEvent.MAX_ARGS = RealisticFarmingSyncEvent.MAX_FRAME_VALUES
+
 function RealisticFarmingActionEvent:readStream(streamId, connection)
     self.actionId = streamReadString(streamId)
     local n = streamReadInt32(streamId)
     self.args = {}
+    -- Row 118: a count past the value ceiling is a forged stream; read no further, never run.
+    if not countWithinBound(n, RealisticFarmingActionEvent.MAX_ARGS) then
+        self.malformed = "ARG_COUNT_OUT_OF_RANGE"
+        return
+    end
     for i = 1, n do
         self.args[i] = readValue(streamId)
     end
