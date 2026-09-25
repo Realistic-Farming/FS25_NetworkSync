@@ -13,6 +13,9 @@ the repo's git history and README.
 
 ## [Unreleased]
 
+### Fixed
+- **A mod that asks the server for an action with a keyed table is now warned once, in the log, on any machine.** The transport carries a positional array only, so such a request reached the server empty from a joined client while working for the host; the warning names the action and the key so the defect shows in singleplayer and host testing. Nothing is refused and nothing on the wire changes.
+
 ## [2.1.0.0] - 2026-09-18
 
 ### Added
