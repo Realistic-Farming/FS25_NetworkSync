@@ -13,6 +13,21 @@ the repo's git history and README.
 
 ## [Unreleased]
 
+## [2.2.0.0] - 2026-10-12
+
+> **This is not a final release.** It gives everyone, testers and players, new or returning, everything we have built so far, so nobody has to wait on an old version any longer. The Realistic Farming suite is far from done: we are still building and expanding every mod, and completing it could take months, possibly a year. Expect changes and rough edges along the way, and please report anything that looks wrong.
+
+### Fixed
+- Multiplayer: a malformed or oversized sync or action message from a client can no longer stall a host or dedicated server. Each message is held to the size its sender can actually produce, and one that breaks that limit is dropped unread.
+- Multiplayer: a server no longer reads sync data that only a server should send.
+
+### Changed
+- For mod authors: `requestAction` now warns once per action when it is given a keyed table instead of a list, because keyed arguments never reach the server.
+
+### Fixed
+- **A forged sync or action stream can no longer hang a server.** Every count the shared transport reads (frames per event, values per frame, action arguments) is now held to what its own writer can produce, and a stream above that is refused without being read further; the state-sync event, which only a server sends, reads nothing at all when it arrives at a server. Nothing changes for a legitimate client; nothing on the wire changes.
+- **A mod that asks the server for an action with a keyed table is now warned once, in the log, on any machine.** The transport carries a positional array only, so such a request reached the server empty from a joined client while working for the host; the warning names the action and the key so the defect shows in singleplayer and host testing. Nothing is refused and nothing on the wire changes.
+
 ## [2.1.0.0] - 2026-09-18
 
 ### Added

@@ -349,8 +349,38 @@ function NetworkSync:_applyAction(actionId, args, connection)
     end
 end
 
+--- A KEYED ARGS TABLE IS EMPTY ON THE WIRE. The action event writes args[1..#args]
+--- (RealisticFarmingSyncEvent.lua:209-216), and a table with only string keys has
+--- length zero, so a joined client's request arrives without its values and the
+--- server's handler bails on the nil. On a host requestAction applies the table in
+--- memory, so the defect never shows there: six senders in three mods shipped that
+--- way (PLAYER-REPORTS row 199). Say so once per action, on both paths, so it shows in
+--- singleplayer and host testing too. Warn only, never refuse: a refusal would break
+--- a host running this NetworkSync with an older caller.
+---@return boolean keyed  true when args carries a key outside 1..#args
+function NetworkSync:_warnKeyedArgs(actionId, args)
+    if type(args) ~= "table" then return false end
+    local n = #args
+    for k in pairs(args) do
+        if type(k) ~= "number" or k < 1 or k > n or math.floor(k) ~= k then
+            -- Keyed on the id's string form: a nil id (a misspelled action constant) must
+            -- log, as the rest of requestAction does with it, never raise (Bob, #11).
+            local memo = tostring(actionId)
+            self.keyedArgsWarned = self.keyedArgsWarned or {}
+            if not self.keyedArgsWarned[memo] then
+                self.keyedArgsWarned[memo] = true
+                NSLogger.warning("requestAction('%s'): args carries the key '%s', which the wire does not carry (args[1..#args] only); a joined client's request arrives without it. Send a positional array.",
+                    tostring(actionId), tostring(k))
+            end
+            return true
+        end
+    end
+    return false
+end
+
 ---Client asks the server to run an action. On a listen-server host, applies directly.
 function NetworkSync:requestAction(actionId, args)
+    self:_warnKeyedArgs(actionId, args)
     if g_currentMission ~= nil and g_currentMission:getIsServer() then
         self:_applyAction(actionId, args, nil)
         return true
